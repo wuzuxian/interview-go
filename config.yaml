@@ -6,7 +6,7 @@ server:
   mode: debug              # debug / release / test
   base_path: ""            # 全局路由前缀，如 /api；留空表示无前缀
   read_timeout: 30s
-  write_timeout: 30s
+  write_timeout: 180s
   idle_timeout: 60s
   shutdown_timeout: 10s    # 优雅关闭时等待存量请求的最长时间
   trusted_proxies: []      # 信任的反向代理网段，如 [10.0.0.0/8]；空列表 = 不信任任何代理
