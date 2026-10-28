@@ -147,6 +147,54 @@ func (r *Repo) InsertMessage(ctx context.Context, m *MessageEntity) error {
 	return r.db.WithContext(ctx).Create(m).Error
 }
 
+// SaveDialogueMessage 插入一条 DIALOGUE/SUMMARY 消息（Java messageRepository.save；
+// created_at 为空由 GORM 按字段名自动填充）。
+func (r *Repo) SaveDialogueMessage(ctx context.Context, e *MessageEntity) error {
+	return r.db.WithContext(ctx).Create(e).Error
+}
+
+// FillLatestUnansweredQuestion 最近一条「问题已问、答案未填」消息回填用户答案
+// （Java findFirstBySessionIdAndUserRecognizedTextIsNullAndAiGeneratedTextIsNotNull
+// OrderBySequenceNumDesc → setUserRecognizedText → save）。无未答问题返回 (false, nil)。
+func (r *Repo) FillLatestUnansweredQuestion(ctx context.Context, sessionID int64, userText string) (bool, error) {
+	var m MessageEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND user_recognized_text IS NULL AND ai_generated_text IS NOT NULL AND message_type <> ?",
+			sessionID, MessageSummary).
+		Order("sequence_num DESC").
+		First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := r.db.WithContext(ctx).Model(&MessageEntity{}).
+		Where("id = ?", m.ID).
+		Update("user_recognized_text", userText).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// FindRecentDialogueMessages 最近 limit 条非 SUMMARY 消息（倒序取窗口后内存恢复
+// 升序，对齐 Java VoiceHistoryLoader 的 PageRequest.of(0, windowSize) 读取形状）。
+func (r *Repo) FindRecentDialogueMessages(ctx context.Context, sessionID int64, limit int) ([]MessageEntity, error) {
+	var recentDesc []MessageEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND message_type <> ?", sessionID, MessageSummary).
+		Order("sequence_num DESC").
+		Limit(limit).
+		Find(&recentDesc).Error
+	if err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(recentDesc)-1; i < j; i, j = i+1, j-1 {
+		recentDesc[i], recentDesc[j] = recentDesc[j], recentDesc[i]
+	}
+	return recentDesc, nil
+}
+
 // DeleteSessionCascade 级联删除：同一事务内先删评估、再删消息、最后删会话
 // （对齐 Java deleteSession L681-690 的语句顺序）。会话不存在返回 ErrSessionNotFound。
 func (r *Repo) DeleteSessionCascade(ctx context.Context, sessionID int64) error {

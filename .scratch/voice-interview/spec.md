@@ -111,3 +111,5 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但模拟面试只�
 3. **死配置不移植**：app.voice-interview.rate-limit.*、audio.*、遗留 debounce 键、tts.default-voice 在 Java 模块内零消费（已核实），Go 不搬运。
 4. **配置键名 snake_case**（app.voice_interview）：项目既有惯例，非 Java 的 kebab-case。
 5. **消费者幂等跳过语义按 Java 原文**（票 08）：决策 15 的"幂等跳过非 PENDING"按字面实现会自相矛盾——首轮失败后状态停留 PROCESSING，重投消息若因"非 PENDING"被跳过则"重投至多 3 次"永不生效；故按 Java 原文 shouldSkip（VoiceEvaluateStreamConsumer L82-86）实现：仅会话缺失或 evaluate_status=COMPLETED 时跳过，PROCESSING/FAILED/PENDING 均放行。POST 重试与恢复补投均在置 PENDING 后入队，两种语义下这些主链路行为一致。
+6. **LLM 异常走 error 消息而非朗读话术**（票 06）：Java 把 chatStreamSentences 捕获异常后的友好话术当作 AI 回复继续下发并落库、朗读（DashscopeLlmService L153-157 返回话术文本）；Go 按票面要求映射同四类话术后下发 `error` 消息、不落库不朗读，会话保持进行中（处理锁由网关 finally 释放、回声冷却照常生效）。话术文本与 Java 逐字一致。
+7. **audio_chunk 的 isLast 恒为 false**（票 06，Java 逐字）：Java OrderedTtsChunkEmitter 每块恒发 isLast=false，完成信号由 control/audio_complete 承担；票面"末句 isLast=true"与 Java/前端行为相悖，按 Java 对齐（同票 04 对字幕 isFinal 的裁决）。

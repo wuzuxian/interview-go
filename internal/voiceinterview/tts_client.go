@@ -192,16 +192,25 @@ func (c *TtsClient) readFailure(err error, wait time.Duration, collected []byte)
 	return nil, fmt.Errorf("TTS WebSocket 连接中断: %w", err)
 }
 
+// dashScopeTTSRealtimeURL 生产默认端点（voice_config.tts_json 无 url 键——Java
+// SDK QwenTtsRealtimeParam 内置端点同值；票 06 补齐 settings_provider.go 注明的
+// 缺口，测试仍以 TtsSettings.URL 指向进程内假服务端）。
+const dashScopeTTSRealtimeURL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+
 // ttsDialURL 组装建连地址：模型以查询参数携带（SDK QwenTtsRealtimeParam：
 // baseWebsocketApiUrl + "?model=" + model；官方文档形如
 // wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime）。
 // 配置里的 URL 已带查询参数时用 & 续接。
 func ttsDialURL(settings TtsSettings) string {
+	base := settings.URL
+	if base == "" {
+		base = dashScopeTTSRealtimeURL
+	}
 	sep := "?"
-	if strings.Contains(settings.URL, "?") {
+	if strings.Contains(base, "?") {
 		sep = "&"
 	}
-	return settings.URL + sep + "model=" + url.QueryEscape(settings.Model)
+	return base + sep + "model=" + url.QueryEscape(settings.Model)
 }
 
 // newTtsEventID 生成协议要求的每事件唯一 event_id（官方文档：每个客户端事件

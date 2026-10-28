@@ -278,11 +278,28 @@ func main() {
 	voiceEvalRecovery.Start(ctx)
 	defer voiceEvalRecovery.Stop()
 	voiceCtl := voiceinterview.NewController(voiceSvc)
+	// 票 06：LLM 流式管道接入网关回合挂钩——流式模型按场次 llmProvider 经
+	// *aibridge.Bridge 解析（VoiceStreamModelFor，结构性满足 voiceinterview 接缝）；
+	// prompt 方向内容复用 interviewSvc 的 Skill 资源子系统（ADR 0002 静态嵌入偏离）；
+	// 简历文本读 resumeRepo；TTS 运行时配置每回合重读（设置页修改热生效）。
+	voiceSettings := voiceinterview.NewProviderConfigSource(providerSvc)
+	voicePipeline := voiceinterview.NewTurnPipeline(voiceinterview.TurnPipelineDeps{
+		Svc:      voiceSvc,
+		Store:    voiceRepo,
+		Models:   bridge,
+		Settings: voiceSettings,
+		TTS:      voiceinterview.NewTtsClient(appCfg.VoiceInterview, slogger),
+		Prompts:  voiceinterview.NewPromptService(interview.NewPromptSanitizer(slogger), interviewSvc, slogger),
+		Resumes:  resumeRepo,
+		Cfg:      appCfg.VoiceInterview,
+		Logger:   slogger,
+	})
 	voiceGateway := voiceinterview.NewGateway(voiceinterview.GatewayDeps{
 		Service:        voiceSvc,
-		Settings:       voiceinterview.NewProviderConfigSource(providerSvc),
+		Settings:       voiceSettings,
 		Config:         appCfg.VoiceInterview,
 		AllowedOrigins: appCfg.CORS.AllowedOrigins,
+		Turn:           voicePipeline.Turn,
 		Logger:         slogger,
 	})
 	go voiceGateway.WarmupOpeningAudio(ctx) // 开场音频预热（默认关，开启时异步不阻塞启动）

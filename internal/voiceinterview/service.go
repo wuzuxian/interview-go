@@ -46,6 +46,10 @@ type SessionStore interface {
 	InsertMessage(ctx context.Context, m *MessageEntity) error
 	DeleteSessionCascade(ctx context.Context, sessionID int64) error
 	FindDialogueMessages(ctx context.Context, sessionID int64) ([]MessageEntity, error)
+	// 票 06 LLM 回合管道：对话落库与最近窗口历史。
+	SaveDialogueMessage(ctx context.Context, e *MessageEntity) error
+	FillLatestUnansweredQuestion(ctx context.Context, sessionID int64, userText string) (bool, error)
+	FindRecentDialogueMessages(ctx context.Context, sessionID int64, limit int) ([]MessageEntity, error)
 	// 票 08 评估恢复巡检。
 	FindStaleEvaluateSessions(ctx context.Context, status VoiceEvaluateStatus, before time.Time) ([]SessionEntity, error)
 	UpdateEvaluateRequeue(ctx context.Context, sessionID int64, at time.Time) error
