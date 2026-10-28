@@ -43,7 +43,9 @@ type AppConfig struct {
 		AllowedTypes []string `config:"allowed_types"`
 		MaxFileSize  int64    `config:"max_file_size" default:"10485760"`
 	} `config:"resume"`
-	Storage struct {
+	// Interview 模拟面试配置段（app.interview），结构定义在 interview 包内与业务同处。
+	Interview interview.Config `config:"interview"`
+	Storage   struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
 		SecretKey        string `config:"secret_key"`
@@ -190,7 +192,11 @@ func main() {
 		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	interviewCtl := interview.NewController(interviewSvc)
+	// 场次子系统（票 03）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
+	sessionCache := interview.NewSessionCache(rdb.Client, appCfg.Interview, slogger)
+	sessionRepo := interview.NewRepo(db.DB)
+	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, appCfg.Interview, slogger)
+	interviewCtl := interview.NewController(interviewSvc, sessionSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

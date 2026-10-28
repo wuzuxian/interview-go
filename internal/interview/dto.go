@@ -1,5 +1,7 @@
 package interview
 
+import "time"
+
 // SkillDTO GET /api/interview/skills 与 /{id} 的响应体，
 // 字段名与 Java 版 InterviewSkillService.SkillDTO（record 驼峰序列化）逐字一致：
 // id/name/description/categories/isPreset/sourceJd/persona/display。
@@ -31,4 +33,55 @@ type DisplayDTO struct {
 	Gradient  string `json:"gradient"`
 	IconBg    string `json:"iconBg"`
 	IconColor string `json:"iconColor"`
+}
+
+// ===== 场次 DTO（字段名与 Java record 序列化逐字一致，笔记 08 §5）=====
+
+// CreateRequest POST /api/interview/sessions 请求体，对应 Java CreateInterviewRequest。
+// 字段一次建全：customCategories/jdText 本票接收但不出题使用（票 07 出题时启用）。
+type CreateRequest struct {
+	ResumeText       *string       `json:"resumeText"`
+	QuestionCount    int           `json:"questionCount"`
+	ResumeID         *int64        `json:"resumeId"`
+	ForceCreate      *bool         `json:"forceCreate"`
+	LLMProvider      *string       `json:"llmProvider"`
+	SkillID          *string       `json:"skillId"`
+	Difficulty       *string       `json:"difficulty"`
+	CustomCategories []CategoryDTO `json:"customCategories"`
+	JDText           *string       `json:"jdText"`
+	RequestID        string        `json:"requestId"`
+}
+
+// SessionDTO 创建/详情响应体，对应 Java InterviewSessionDTO：
+// sessionId, resumeText, totalQuestions, currentIndex, questions[], status,
+// knowledgeBaseId, interviewCategory。
+type SessionDTO struct {
+	SessionID         string        `json:"sessionId"`
+	ResumeText        string        `json:"resumeText"`
+	TotalQuestions    int           `json:"totalQuestions"`
+	CurrentIndex      int           `json:"currentIndex"`
+	Questions         []QuestionDTO `json:"questions"`
+	Status            SessionStatus `json:"status"`
+	KnowledgeBaseID   *int64        `json:"knowledgeBaseId"`
+	InterviewCategory *string       `json:"interviewCategory"`
+}
+
+// SessionListItemDTO GET /api/interview/sessions 列表项，对应 Java SessionListItemDTO。
+// 字段一次建全：评估相关列（evaluateStatus/evaluateError/overallScore）票 06 才有真实值；
+// sourceType/knowledgeBaseId/interviewCategory 知识库入口（不在本仓范围）先为零值。
+type SessionListItemDTO struct {
+	SessionID         string     `json:"sessionId"`
+	SkillID           *string    `json:"skillId"`
+	Difficulty        *string    `json:"difficulty"`
+	ResumeID          *int64     `json:"resumeId"`
+	TotalQuestions    *int       `json:"totalQuestions"`
+	Status            *string    `json:"status"`
+	EvaluateStatus    *string    `json:"evaluateStatus"`
+	EvaluateError     *string    `json:"evaluateError"`
+	OverallScore      *int       `json:"overallScore"`
+	SourceType        *string    `json:"sourceType"`
+	KnowledgeBaseID   *int64     `json:"knowledgeBaseId"`
+	InterviewCategory *string    `json:"interviewCategory"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	CompletedAt       *time.Time `json:"completedAt"`
 }
