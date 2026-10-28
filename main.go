@@ -287,6 +287,15 @@ func main() {
 	// prompt 方向内容复用 interviewSvc 的 Skill 资源子系统（ADR 0002 静态嵌入偏离）；
 	// 简历文本读 resumeRepo；TTS 运行时配置每回合重读（设置页修改热生效）。
 	voiceSettings := voiceinterview.NewProviderConfigSource(providerSvc)
+	// 票 07：上下文压缩加载器——有界历史装配（摘要行 + 最近窗口 + 至多一个待摘要
+	// 批）；SUMMARY 摘要用与语音面试官独立的普通模型（bridge.VoicePlainCompleterFor，
+	// 无工具无对话记忆注入），新边界在会话行悲观锁内写回；摘要失败降级最近窗口，
+	// 回合不中断。
+	voiceHistory := voiceinterview.NewHistoryLoader(
+		voiceRepo,
+		voiceinterview.NewCompressor(appCfg.VoiceInterview.ContextCompression, bridge, slogger),
+		appCfg.VoiceInterview.ContextCompression,
+		slogger)
 	voicePipeline := voiceinterview.NewTurnPipeline(voiceinterview.TurnPipelineDeps{
 		Svc:      voiceSvc,
 		Store:    voiceRepo,
@@ -295,6 +304,7 @@ func main() {
 		TTS:      voiceinterview.NewTtsClient(appCfg.VoiceInterview, slogger),
 		Prompts:  voiceinterview.NewPromptService(interview.NewPromptSanitizer(slogger), interviewSvc, slogger),
 		Resumes:  resumeRepo,
+		History:  voiceHistory,
 		Cfg:      appCfg.VoiceInterview,
 		Logger:   slogger,
 	})

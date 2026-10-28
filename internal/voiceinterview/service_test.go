@@ -212,7 +212,7 @@ func (s *fakeStore) ListByUser(ctx context.Context, userID string, status *Voice
 func (s *fakeStore) CountDialogueMessages(ctx context.Context, sessionID int64) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return int64(len(s.dialogues[sessionID])), nil
+	return int64(len(dialogueOnlyRows(s.dialogues[sessionID]))), nil
 }
 
 func (s *fakeStore) InsertMessage(ctx context.Context, m *MessageEntity) error {
@@ -252,7 +252,7 @@ func (s *fakeStore) FindDialogueMessages(ctx context.Context, sessionID int64) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rec.add("find-dialogues")
-	return s.dialogues[sessionID], nil
+	return dialogueOnlyRows(s.dialogues[sessionID]), nil
 }
 
 func (s *fakeStore) addSession(e *SessionEntity) int64 {
@@ -308,11 +308,11 @@ func (s *fakeStore) SaveDialogueMessage(ctx context.Context, e *MessageEntity) e
 
 // FillLatestUnansweredQuestion 最近一条「问题已问、答案未填」的消息回填用户答案
 // （Java findFirstBySessionIdAndUserRecognizedTextIsNullAndAiGeneratedTextIsNotNull
-// OrderBySequenceNumDesc + save 语义）。
+// OrderBySequenceNumDesc + save 语义；SUMMARY 行不参与回填）。
 func (s *fakeStore) FillLatestUnansweredQuestion(ctx context.Context, sessionID int64, userText string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows := s.dialogues[sessionID]
+	rows := dialogueOnlyRows(s.dialogues[sessionID])
 	for i := len(rows) - 1; i >= 0; i-- {
 		if rows[i].UserRecognizedText == nil && rows[i].AiGeneratedText != nil {
 			rows[i].UserRecognizedText = stringPtr(userText)
@@ -328,7 +328,7 @@ func (s *fakeStore) FillLatestUnansweredQuestion(ctx context.Context, sessionID 
 func (s *fakeStore) FindRecentDialogueMessages(ctx context.Context, sessionID int64, limit int) ([]MessageEntity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows := append([]MessageEntity(nil), s.dialogues[sessionID]...)
+	rows := dialogueOnlyRows(s.dialogues[sessionID])
 	seqOf := func(m MessageEntity) int {
 		if m.SequenceNum == nil {
 			return 0

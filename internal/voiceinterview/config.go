@@ -59,5 +59,8 @@ type Config struct {
 	// 四阶段默认值逐字见 PhaseConfig 注释；类型与判据纯函数在 phase.go）。
 	Phase PhaseConfig `config:"phase"`
 
-	// 后续票追加字段（票 07：ContextCompression 上下文压缩）。
+	// 上下文压缩（票 07；Java application.yml app.voice-interview.context-compression.*
+	// 段，默认值与 VoiceInterviewProperties.ContextCompressionConfig 逐字一致，
+	// 详见 ContextCompressionConfig；行为实现见 context_compression.go）。
+	ContextCompression ContextCompressionConfig `config:"context_compression"`
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrSessionNotFound 场次不存在（FindSessionByID / DeleteSessionCascade 返回）。
@@ -300,4 +301,102 @@ func truncateVoiceError(s *string) *string {
 	}
 	t := truncateVoiceErrMsg(*s)
 	return &t
+}
+
+// ===== 上下文压缩（票 07）=====
+
+// FindSummaryRow 会话第一条（sequence_num 升序）SUMMARY 摘要行（对齐 Java
+// findFirstBySessionIdAndMessageTypeOrderBySequenceNumAsc）；无行返回 (nil, nil)。
+func (r *Repo) FindSummaryRow(ctx context.Context, sessionID int64) (*MessageEntity, error) {
+	var m MessageEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND message_type = ?", sessionID, MessageSummary).
+		Order("sequence_num ASC").
+		First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// FindPendingSummaryBatch 摘要边界后、最近窗口前的待摘要批（对齐 Java
+// findBySessionIdAndMessageTypeNotAndSequenceNumGreaterThanAndSequenceNumLessThanOrderBySequenceNumAsc
+// + PageRequest.of(0, batchSize)：升序、sequence_num ∈ (after, before)、至多 limit 条）。
+func (r *Repo) FindPendingSummaryBatch(ctx context.Context, sessionID int64, after, before, limit int) ([]MessageEntity, error) {
+	var list []MessageEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND message_type <> ? AND sequence_num > ? AND sequence_num < ?",
+			sessionID, MessageSummary, after, before).
+		Order("sequence_num ASC").
+		Limit(limit).
+		Find(&list).Error
+	return list, err
+}
+
+// FindDialogueMessageAt 升序第 offset 条（0 起）非 SUMMARY 消息（OFFSET/LIMIT 1
+// 定位，旧摘要边界迁移专用，不做全量读取）；无行返回 (nil, nil)。
+func (r *Repo) FindDialogueMessageAt(ctx context.Context, sessionID int64, offset int) (*MessageEntity, error) {
+	var m MessageEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND message_type <> ?", sessionID, MessageSummary).
+		Order("sequence_num ASC").
+		Offset(offset).Limit(1).
+		First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// SaveSummaryRow 上下文摘要行锁内写回（Java VoiceInterviewService.saveSummaryRow
+// L321-344 逐字）：事务内会话行 SELECT ... FOR UPDATE → 读既有 SUMMARY 行（无则
+// 新行 sequence_num=-1）→ 锁内校验边界单调不回退（回退返回 ErrSummaryBoundaryRegressed）
+// → 原地写 ai_generated_text / sequence_num=min(旧,-1) / summary_covered_sequence_num。
+// LLM 压缩必须在事务外完成，本方法只做边界写入。会话不存在返回 ErrSessionNotFound。
+func (r *Repo) SaveSummaryRow(ctx context.Context, sessionID int64, summary *string, coveredSequenceNum int) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var session SessionEntity
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&session, sessionID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrSessionNotFound
+			}
+			return err
+		}
+		var row MessageEntity
+		err := tx.Where("session_id = ? AND message_type = ?", sessionID, MessageSummary).
+			Order("sequence_num ASC").
+			First(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			seq := -1
+			row = MessageEntity{SessionID: sessionID, MessageType: MessageSummary, SequenceNum: &seq}
+		} else if err != nil {
+			return err
+		}
+		if row.SummaryCoveredSequenceNum != nil && coveredSequenceNum < *row.SummaryCoveredSequenceNum {
+			return ErrSummaryBoundaryRegressed
+		}
+		// 保留负 sequenceNum 排序语义，但不再作为覆盖边界的事实来源。
+		seq := -1
+		if row.SequenceNum != nil && *row.SequenceNum < seq {
+			seq = *row.SequenceNum
+		}
+		if row.ID == 0 {
+			row.SequenceNum = &seq
+			row.AiGeneratedText = summary
+			row.SummaryCoveredSequenceNum = &coveredSequenceNum
+			return tx.Create(&row).Error
+		}
+		return tx.Model(&MessageEntity{}).Where("id = ?", row.ID).Updates(map[string]any{
+			"ai_generated_text":            summary,
+			"sequence_num":                 seq,
+			"summary_covered_sequence_num": coveredSequenceNum,
+		}).Error
+	})
 }

@@ -168,6 +168,10 @@ func TestFormatTurnLines历史行格式化(t *testing.T) {
 			[]string{"候选人：补充一句"}},
 		{"空白文本按缺失处理", []MessageEntity{msg("  ", "答")},
 			[]string{"候选人：答"}},
+		{"挂起期间双空行先冲刷挂起问题", []MessageEntity{msg("第一问", ""), msg("", ""), msg("", "答一")},
+			[]string{"面试官：第一问", "候选人：答一"}},
+		{"双空行无挂起时跳过", []MessageEntity{msg("", ""), msg("问", "答")},
+			[]string{"面试官：问", "候选人：答"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
