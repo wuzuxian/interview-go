@@ -1,0 +1,22 @@
+# 编译产物
+/server
+/interview-go
+/interview
+*.exe
+*.test
+*.out
+
+# 本地运行数据（与项目无关的历史遗留）
+pms
+pms.db
+
+# 日志
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

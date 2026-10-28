@@ -1,0 +1,136 @@
+# HTTP 服务器配置，对应 core/gin 的 ServerConfig（键名规则见 core/gin/config.go）
+# 环境变量可覆盖任意键：APP_ 前缀 + 大写路径，如 APP_SERVER_PORT=9090 覆盖 server.port
+server:
+  host: 0.0.0.0
+  port: 8080
+  mode: debug              # debug / release / test
+  base_path: ""            # 全局路由前缀，如 /api；留空表示无前缀
+  read_timeout: 30s
+  write_timeout: 30s
+  idle_timeout: 60s
+  shutdown_timeout: 10s    # 优雅关闭时等待存量请求的最长时间
+  trusted_proxies: []      # 信任的反向代理网段，如 [10.0.0.0/8]；空列表 = 不信任任何代理
+
+# 日志配置，对应 core/log 的 Config
+log:
+  level: info              # debug / info / warn / error
+  format: json             # json / text
+  output: stdout           # stdout、stderr 或文件路径，逗号分隔可多输出
+
+# PostgreSQL 配置，对应 core/gorm 的 Config
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: "123456"
+  dbname: interview_guide  # 与 Java 版共用同一个库
+  sslmode: disable
+  time_zone: Asia/Shanghai
+  max_open_conns: 20
+  max_idle_conns: 5
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 30m
+  log_level: warn          # gorm SQL 日志级别：silent / error / warn / info
+  slow_threshold: 200ms
+
+# Redis 配置，对应 core/redis 的 Config
+redis:
+  addr: 127.0.0.1:6379
+  password: ""             # 无密码留空
+  db: 0
+  pool_size: 20
+  min_idle_conns: 5
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+
+# ===== 业务配置（对齐 Java 版 application.yml 的 app.* 段）=====
+# 环境变量覆盖：APP_AI_DEFAULT_PROVIDER=glm 覆盖 app.ai.default_provider
+app:
+  # PostgreSQL 库名沿用 core/gorm 的 postgres.dbname；此处为可读性提示
+  name: interview-go
+  version: 1.0.0
+
+  ai:
+    default_provider: dashscope
+    default_embedding_provider: dashscope
+    embedding_dimensions: 1024
+    # Provider API Key 加密密钥（AES-256-GCM）；生产必须配置，等价 APP_AI_CONFIG_ENCRYPTION_KEY
+    api_key_encryption_key: "cbb8990d9e8a1a784bd3aa38cf45068f19d7238fe71d6f48"
+    # 未配置密钥时是否允许开发 fallback（与 Java allow-fallback-encryption-key 一致）
+    allow_fallback_encryption_key: true
+    # 结构化输出（简历评分）解析失败重试次数
+    structured_max_attempts: 2
+    # LLM 单次调用超时：长简历的长输出评分可能需要数分钟，过短会误杀慢而成功的响应；
+    # 失败由 Stream 消费者的 3 次重试兜底
+    llm_call_timeout: 300s
+    # 预设 Provider（仅在 llm_provider_config 空表时播种）
+    providers:
+      dashscope:
+        base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        api_key: ""
+        model: qwen3.5-flash
+        embedding_model: text-embedding-v3
+        embedding_dimensions: 1024
+        supports_embedding: true
+      lmstudio:
+        base_url: http://localhost:1234
+        api_key: lm-studio
+        model: qwen2.5-7b-instruct
+        supports_embedding: false
+      kimi:
+        base_url: https://api.moonshot.cn/v1
+        api_key: ""
+        model: kimi-latest
+        supports_embedding: false
+      deepseek:
+        base_url: https://api.deepseek.com
+        api_key: ""
+        model: deepseek-chat
+        supports_embedding: false
+      glm:
+        base_url: https://open.bigmodel.cn/api/paas/v4
+        api_key: ""
+        model: glm-4.7
+        embedding_model: embedding-3
+        embedding_dimensions: 1024
+        supports_embedding: true
+
+  resume:
+    max_file_size: 10485760   # 10MB，与 Java 版 MAX_FILE_SIZE 一致
+    allowed_types:
+      - application/pdf
+      - application/msword
+      - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+      - text/plain
+
+  storage:
+    endpoint: http://localhost:9000
+    access_key: rustfsadmin
+    secret_key: rustfsadmin
+    bucket: interview-guide
+    region: us-east-1
+    auto_create_bucket: true
+
+  cors:
+    # 与 Java 版 app.cors.allowed-origins 一致
+    allowed_origins:
+      - http://localhost:5173
+      - http://localhost:5174
+      - http://localhost:80
+      - http://127.0.0.1:5173
+      - http://127.0.0.1:5174
+      - http://127.0.0.1:80
+
+  voice:
+    # 语音 ASR/TTS 共享 API Key（首次初始化语音配置时加密落库）
+    asr_api_key: ""
+
+  async:
+    recovery:
+      enabled: true
+      pending_threshold: 10m
+      processing_threshold: 15m
+      interval: 1m
+      batch_size: 10
+      max_recovery_count: 3
