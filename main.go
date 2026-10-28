@@ -193,10 +193,11 @@ func main() {
 		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	// 场次子系统（票 03）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
+	// 场次子系统（票 03/04）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
+	// 评估入队扩展点票 06 注入真实现，当前传 nil（空操作）。
 	sessionCache := interview.NewSessionCache(rdb.Client, appCfg.Interview, slogger)
 	sessionRepo := interview.NewRepo(db.DB)
-	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, appCfg.Interview, slogger)
+	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, appCfg.Interview, slogger, nil)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。

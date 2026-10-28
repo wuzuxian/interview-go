@@ -5,6 +5,7 @@ package interview
 import (
 	"context"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -91,6 +92,74 @@ func (r *Repo) DeleteBySessionID(ctx context.Context, sessionID string) error {
 		}
 		return tx.Delete(&SessionEntity{}, e.ID).Error
 	})
+}
+
+// UpdateStatus 更新场次状态（对齐 Java updateSessionStatus：转入 COMPLETED/EVALUATED
+// 时同步写 completed_at；行不存在静默跳过，对齐 Java isPresent 守卫）。
+func (r *Repo) UpdateStatus(ctx context.Context, sessionID string, status SessionStatus) error {
+	updates := map[string]any{"status": status}
+	if status == StatusCompleted || status == StatusEvaluated {
+		updates["completed_at"] = time.Now()
+	}
+	return r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Where("session_id = ?", sessionID).Updates(updates).Error
+}
+
+// UpdateCurrentQuestionIndex 更新作答进度，并像 Java 一样一并置状态 IN_PROGRESS
+// （submitAnswer 随后以 updateSessionStatus 覆盖末题的 COMPLETED；行不存在静默跳过）。
+func (r *Repo) UpdateCurrentQuestionIndex(ctx context.Context, sessionID string, index int) error {
+	return r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Where("session_id = ?", sessionID).
+		Updates(map[string]any{"current_question_index": index, "status": StatusInProgress}).Error
+}
+
+// UpsertAnswer 按（场次内部ID, 题号）upsert 作答：已有行 → 更新（不新增行，
+// answered_at 刷新——票面验收要求，Java 仅 PrePersist 首次写入，此为有意覆盖）；
+// 无行 → 新建。score/feedback 由调用方语义决定（暂存/提交恒 0/空，评估时才回填）。
+func (r *Repo) UpsertAnswer(ctx context.Context, sessionRowID int64, index int, question string, category, userAnswer *string) error {
+	var existing AnswerEntity
+	err := r.db.WithContext(ctx).
+		Where("session_id = ? AND question_index = ?", sessionRowID, index).
+		First(&existing).Error
+	now := time.Now()
+	if IsNotFound(err) {
+		row := answerRowForInsert(sessionRowID, index, question, category, userAnswer, now)
+		return r.db.WithContext(ctx).Create(&row).Error
+	}
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&AnswerEntity{}).
+		Where("id = ?", existing.ID).
+		Updates(answerUpdateColumns(question, category, userAnswer, now)).Error
+}
+
+// answerRowForInsert 新建作答行的字段：score 恒 0、feedback 空（对齐 Java
+// saveAnswer(..., 0, null)——分数由评估回填），answered_at 取当前时间。
+func answerRowForInsert(sessionRowID int64, index int, question string, category, userAnswer *string, now time.Time) AnswerEntity {
+	return AnswerEntity{
+		SessionID:     sessionRowID,
+		QuestionIndex: intPtr(index),
+		Question:      stringPtr(question),
+		Category:      category,
+		UserAnswer:    userAnswer,
+		Score:         intPtr(0),
+		Feedback:      nil,
+		AnsweredAt:    now,
+	}
+}
+
+// answerUpdateColumns 更新既有作答行的列：仅作答内容与 answered_at，
+// 不触碰 id/session_id/question_index（upsert 不产生重复行的关键）。
+func answerUpdateColumns(question string, category, userAnswer *string, now time.Time) map[string]any {
+	return map[string]any{
+		"question":    stringPtr(question),
+		"category":    category,
+		"user_answer": userAnswer,
+		"score":       intPtr(0),
+		"feedback":    nil,
+		"answered_at": now,
+	}
 }
 
 // ResumeTextByID 取关联简历正文（对齐 Java entity.getResume().getResumeText() 的 JPA join 语义）；

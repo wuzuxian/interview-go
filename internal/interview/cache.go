@@ -88,6 +88,49 @@ func (c *SessionCache) RefreshTTL(ctx context.Context, sessionID string) error {
 	return c.rdb.Expire(ctx, sessionKeyPrefix+sessionID, c.cfg.SessionCacheTTL).Err()
 }
 
+// UpdateSessionStatus 更新缓存会话状态（对齐 Java InterviewSessionCache.updateSessionStatus：
+// 整体重写 + 刷新 TTL；转入完成态时移除 resume→session 映射，未完成复用查询不再命中）。
+// 缓存未命中时静默跳过——DB 为准，读路径可从 DB 恢复。
+func (c *SessionCache) UpdateSessionStatus(ctx context.Context, sessionID string, status SessionStatus) error {
+	s, err := c.GetSession(ctx, sessionID)
+	if err != nil || s == nil {
+		return err
+	}
+	s.Status = status
+	if err := c.SaveSession(ctx, *s); err != nil {
+		return err
+	}
+	if !IsUnfinished(status) && s.ResumeID != nil {
+		return c.RemoveResumeMapping(ctx, *s.ResumeID)
+	}
+	return nil
+}
+
+// UpdateCurrentIndex 更新缓存作答进度（对齐 Java updateCurrentIndex：整体重写 + 刷新 TTL）。
+func (c *SessionCache) UpdateCurrentIndex(ctx context.Context, sessionID string, index int) error {
+	s, err := c.GetSession(ctx, sessionID)
+	if err != nil || s == nil {
+		return err
+	}
+	s.CurrentIndex = index
+	return c.SaveSession(ctx, *s)
+}
+
+// UpdateQuestions 更新缓存题目列表（作答回写 userAnswer 后调用；对齐 Java
+// updateQuestions：整体重写 + 刷新 TTL）。
+func (c *SessionCache) UpdateQuestions(ctx context.Context, sessionID string, questions []QuestionDTO) error {
+	s, err := c.GetSession(ctx, sessionID)
+	if err != nil || s == nil {
+		return err
+	}
+	raw, err := SerializeQuestions(questions)
+	if err != nil {
+		return err
+	}
+	s.QuestionsJSON = raw
+	return c.SaveSession(ctx, *s)
+}
+
 // SaveResumeMapping 建立 resumeId → sessionId 映射（用于查找未完成会话）。
 func (c *SessionCache) SaveResumeMapping(ctx context.Context, resumeID int64, sessionID string) error {
 	return c.rdb.Set(ctx, resumeSessionKey(resumeID), sessionID, c.cfg.SessionCacheTTL).Err()

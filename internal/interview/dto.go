@@ -78,6 +78,37 @@ type SessionDTO struct {
 	InterviewCategory *string       `json:"interviewCategory"`
 }
 
+// AnswerRequest PUT/POST /sessions/{id}/answers 请求体，对齐 Java 松散 Map 取值
+// {"questionIndex": int, "answer": string}。questionIndex 为指针：缺失时由 service
+// 显式返回 400（Java 缺字段会 NPE → 500 "系统繁忙"，笔记 08 §2.5 建议 Go 显式校验）；
+// answer 为指针：缺失/为 null 时 userAnswer 存 NULL（对齐 Java (String) body.get("answer")）。
+type AnswerRequest struct {
+	QuestionIndex *int    `json:"questionIndex"`
+	Answer        *string `json:"answer"`
+}
+
+// SubmitAnswerResponse POST /sessions/{id}/answers 响应体，对应 Java record
+// SubmitAnswerResponse：hasNextQuestion, nextQuestion（末题为 null）, currentIndex,
+// totalQuestions。字段名与 record 组件名逐字一致。
+type SubmitAnswerResponse struct {
+	HasNextQuestion bool         `json:"hasNextQuestion"`
+	NextQuestion    *QuestionDTO `json:"nextQuestion"`
+	CurrentIndex    int          `json:"currentIndex"`
+	TotalQuestions  int          `json:"totalQuestions"`
+}
+
+// CurrentQuestionResponse GET /sessions/{id}/question 响应体，对齐 Java
+// getCurrentQuestionResponse 的 Map.of 精确形状（笔记 05 §4 / 08 §2.4）：
+//   - 未完成：{"completed": false, "question": {...}}（无 message 键）
+//   - 完成：  {"completed": true, "message": "所有问题已回答完毕"}（无 question 键）
+//
+// 指针 + omitempty 实现"每分支恰好两个键"。
+type CurrentQuestionResponse struct {
+	Completed bool         `json:"completed"`
+	Question  *QuestionDTO `json:"question,omitempty"`
+	Message   *string      `json:"message,omitempty"`
+}
+
 // SessionListItemDTO GET /api/interview/sessions 列表项，对应 Java SessionListItemDTO。
 // 字段一次建全：评估相关列（evaluateStatus/evaluateError/overallScore）票 06 才有真实值；
 // sourceType/knowledgeBaseId/interviewCategory 知识库入口（不在本仓范围）先为零值。
