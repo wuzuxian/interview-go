@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（JD 解析 prompt 需要参考文件清单）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] ModelResolver 接口由 aibridge 实现，启动时注入 interview 模块；providerId 不存在/被禁用时返回设置模块既有业务码
 - [ ] parse-jd 走现有结构化输出器（JSON 模式 + 解析失败带修复提示重试 2 次 + JSON 修复），prompt 从 Java 逐字移植含防注入段

@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（创建需校验方向存在）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `POST /sessions` 创建兜底题场次：状态 CREATED、题目为兜底题、默认值与 Java 一致
 - [ ] 相同幂等键重复提交返回同一场次；并发请求不产生重复行（唯一约束兜底生效）
