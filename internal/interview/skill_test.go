@@ -8,6 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/wuzuxian/interview/internal/ai"
 	"github.com/wuzuxian/interview/internal/apperr"
 )
 
@@ -444,7 +445,7 @@ func TestLocateReferenceOnEmbeddedResources(t *testing.T) {
 
 // 契约回归：不存在的方向必须返回 interview 段业务码（404 语义），消息与 Java 版一致。
 func TestServiceGetUnknownSkill(t *testing.T) {
-	svc, err := NewService(discardLogger())
+	svc, err := NewService(&stubResolver{}, ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), discardLogger())
 	if err != nil {
 		t.Fatalf("NewService 失败: %v", err)
 	}

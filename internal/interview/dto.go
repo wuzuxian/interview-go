@@ -25,6 +25,18 @@ type CategoryDTO struct {
 	Shared   bool    `json:"shared"`
 }
 
+// JdCategoryDTO POST /api/interview/skills/parse-jd 的响应元素，
+// 对应 Java InterviewSkillService.CategoryDTO（record）：key/label/priority/ref/shared。
+// ref 与 shared 为可空（Java String/Boolean 语义）：LLM 未给出时序列化为 null 原样透传，
+// 纠正 ref/shared 发生在创建会话的 buildCustomSkill（票 07），不在本接口。
+type JdCategoryDTO struct {
+	Key      string  `json:"key"`
+	Label    string  `json:"label"`
+	Priority string  `json:"priority"`
+	Ref      *string `json:"ref"`
+	Shared   *bool   `json:"shared"`
+}
+
 // DisplayDTO 前端方向卡片展示字段，对应 Java DisplayDTO。
 type DisplayDTO struct {
 	Icon      string `json:"icon"`
