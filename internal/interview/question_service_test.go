@@ -41,7 +41,9 @@ func (m *routingModel) Generate(ctx context.Context, input []*schema.Message, op
 }
 
 // isResumeUser 简历题 user prompt 的判别标记（resume-user.st 独有文案）。
-func isResumeUser(usr string) bool { return strings.Contains(usr, "针对项目经历的面试主问题") }
+func isResumeUser(usr string) bool {
+	return strings.Contains(usr, "针对项目经历的面试主问题")
+}
 
 // questionsJSON 合法的 LLM 出题响应：n 个主问题（type 小写以校验大写转换），各带 1 条追问。
 func questionsJSON(prefix string, n int) string {
@@ -58,7 +60,7 @@ func questionsJSON(prefix string, n int) string {
 func newQuestionService(t *testing.T, cm ai.ChatCompleter) *QuestionService {
 	t.Helper()
 	svc, err := NewService(&stubResolver{cm: cm},
-		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), discardLogger())
+		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), Config{}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewService 失败: %v", err)
 	}
@@ -196,14 +198,16 @@ func newRefTestService(t *testing.T, files map[string]string) *Service {
 	if err != nil {
 		t.Fatalf("加载注册表失败: %v", err)
 	}
-	return &Service{reg: reg, fsys: mapFS(files), logger: discardLogger(), sanitizer: NewPromptSanitizer(discardLogger())}
+	return &Service{reg: reg, fsys: mapFS(files), logger: discardLogger(), sanitizer: NewPromptSanitizer(discardLogger()),
+		maxReferenceSectionChars: MaxReferenceSectionChars, maxEvaluationReferenceSectionChars: MaxEvaluationReferenceSectionChars,
+		maxSingleReferenceChars: MaxSingleReferenceChars}
 }
 
 func bigFileSkillFiles(contentLen int) map[string]string {
 	big := strings.Repeat("字", contentLen)
 	return map[string]string{
-		"s1/SKILL.md":       "---\nname: s1\ndescription: 方向一\n---\n考官一",
-		"s1/skill.meta.yml": "categories:\n  - key: A\n    label: 甲\n    priority: CORE\n    ref: a.md\n    shared: false\n  - key: B\n    label: 乙\n    priority: CORE\n    ref: b.md\n    shared: false\n  - key: C\n    label: 丙\n    priority: NORMAL\n    ref: c.md\n    shared: false\n  - key: D\n    label: 丁\n    priority: NORMAL\n    ref: d.md\n    shared: false\n  - key: E\n    label: 戊\n    priority: NORMAL\n    ref: e.md\n    shared: false\n",
+		"s1/SKILL.md":        "---\nname: s1\ndescription: 方向一\n---\n考官一",
+		"s1/skill.meta.yml":  "categories:\n  - key: A\n    label: 甲\n    priority: CORE\n    ref: a.md\n    shared: false\n  - key: B\n    label: 乙\n    priority: CORE\n    ref: b.md\n    shared: false\n  - key: C\n    label: 丙\n    priority: NORMAL\n    ref: c.md\n    shared: false\n  - key: D\n    label: 丁\n    priority: NORMAL\n    ref: d.md\n    shared: false\n  - key: E\n    label: 戊\n    priority: NORMAL\n    ref: e.md\n    shared: false\n",
 		"s1/references/a.md": big,
 		"s1/references/b.md": big,
 		"s1/references/c.md": big,
@@ -287,9 +291,9 @@ func TestReferenceSectionFiltersAndEmpty(t *testing.T) {
 // custom 方向的非 shared ref 按 categoryRefIndex 用来源方向解析。
 func TestReferenceSectionCustomRefResolution(t *testing.T) {
 	files := map[string]string{
-		"s1/SKILL.md":            "---\nname: s1\ndescription: 方向一\n---\n考官一",
-		"s1/skill.meta.yml":      "categories:\n  - key: K\n    label: 开\n    priority: CORE\n    ref: k.md\n    shared: false\n",
-		"s1/references/k.md":     "来自 s1 的参考内容",
+		"s1/SKILL.md":             "---\nname: s1\ndescription: 方向一\n---\n考官一",
+		"s1/skill.meta.yml":       "categories:\n  - key: K\n    label: 开\n    priority: CORE\n    ref: k.md\n    shared: false\n",
+		"s1/references/k.md":      "来自 s1 的参考内容",
 		"_shared/references/k.md": "共享库内容",
 	}
 	svc := newRefTestService(t, files)
@@ -308,7 +312,7 @@ func TestReferenceSectionCustomRefResolution(t *testing.T) {
 // ===== custom 方向构建 =====
 
 func TestBuildCustomSkill(t *testing.T) {
-	svc, err := NewService(&stubResolver{}, ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), discardLogger())
+	svc, err := NewService(&stubResolver{}, ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), Config{}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewService 失败: %v", err)
 	}
@@ -358,7 +362,7 @@ func TestCollectHistoricalQuestions(t *testing.T) {
 	s1 := "[" + mk("Q1", "MYSQL", "S1") + "," + `{"questionIndex":1,"question":"Q1追问","isFollowUp":true,"type":"MYSQL"}` + "]"
 	s2 := "[" + mk("Q1", "MYSQL", "S1 dup") + "," + mk("Q2", "", "") + "]"
 
-	got := collectHistoricalQuestions([]string{s1, s2, "not json"})
+	got := collectHistoricalQuestions([]string{s1, s2, "not json"}, maxHistoricalQuestions)
 	if len(got) != 2 {
 		t.Fatalf("应提取 2 条（追问过滤 + 题面去重 + 坏 JSON 跳过），got %v", got)
 	}
@@ -382,7 +386,7 @@ func TestCollectHistoricalQuestions(t *testing.T) {
 		sb.WriteString("]")
 		return sb.String()
 	}
-	got = collectHistoricalQuestions([]string{session(0), session(40), session(80)})
+	got = collectHistoricalQuestions([]string{session(0), session(40), session(80)}, maxHistoricalQuestions)
 	if len(got) != maxHistoricalQuestions {
 		t.Errorf("应截到 60 条，got %d", len(got))
 	}
@@ -658,8 +662,11 @@ func TestDirectionFailureDegradesToResume(t *testing.T) {
 	}
 }
 
-// 双路全失败：简历路失败后整场方向题重出也失败 → 业务错误上抛（创建失败，对齐 Java）。
-func TestBothPathsFailPropagates(t *testing.T) {
+// 失败分层（spec 用户故事 21）：LLM 调用失败/输出不合法 → 静态兜底题（不报错），
+// 功能不因模型故障不可用；Provider 解析错误 → 透传业务错误（TestGenerationResolverErrorPassthrough）。
+// 注：Java 单路/双路全失败会把 BusinessException 上抛（笔记 02 §4），此处按 spec 用户
+// 故事 21 落为兜底题，为有意的行为选择。
+func TestBothPathsFailFallsBackToStaticQuestions(t *testing.T) {
 	m := &routingModel{route: func(sys, usr string) (string, error) {
 		return "", errors.New("boom")
 	}}
@@ -667,8 +674,30 @@ func TestBothPathsFailPropagates(t *testing.T) {
 	resume := "简历内容"
 	params := genParams(5)
 	params.ResumeText = &resume
-	if _, err := qs.GenerateQuestionsBySkill(context.Background(), params); err == nil {
-		t.Fatal("双路全失败应上抛错误")
+	got, err := qs.GenerateQuestionsBySkill(context.Background(), params)
+	if err != nil {
+		t.Fatalf("模型故障应回退静态兜底题而非报错: %v", err)
+	}
+	if countMainQuestions(got) != 5 {
+		t.Fatalf("兜底应 5 主问题，got %d", countMainQuestions(got))
+	}
+	if got[0].Question != "请谈谈你在\"Java\"方向的技术理解和实践经验。" {
+		t.Errorf("应为分类模板兜底题: %q", got[0].Question)
+	}
+}
+
+// 无简历单路生成失败同样落静态兜底题（不报错）。
+func TestSinglePathFailureFallsBackToStaticQuestions(t *testing.T) {
+	m := &routingModel{route: func(sys, usr string) (string, error) {
+		return "", errors.New("boom")
+	}}
+	qs := newQuestionService(t, m)
+	got, err := qs.GenerateQuestionsBySkill(context.Background(), genParams(3))
+	if err != nil {
+		t.Fatalf("模型故障应回退静态兜底题而非报错: %v", err)
+	}
+	if countMainQuestions(got) != 3 {
+		t.Fatalf("兜底应 3 主问题，got %d", countMainQuestions(got))
 	}
 }
 
@@ -870,7 +899,7 @@ func TestSanitizeFollowUps(t *testing.T) {
 
 func TestGenerationResolverErrorPassthrough(t *testing.T) {
 	svc, err := NewService(&stubResolver{err: apperr.New(apperr.CodeProviderNotFound, "Provider 'x' 不存在")},
-		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), discardLogger())
+		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), Config{}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewService 失败: %v", err)
 	}

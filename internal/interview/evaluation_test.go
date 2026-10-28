@@ -628,16 +628,23 @@ func TestEvaluateSessionLeafRetryFailureUsesDegradedFeedback(t *testing.T) {
 	}
 }
 
-// ===== 引擎：关闭二分恢复时整批失败走合并默认文案 =====
+// ===== 引擎：关闭二分恢复时部分批失败走合并默认文案 =====
 
+// 契约：关闭二分恢复后整批失败不留降级产物，但只要还有批成功（部分成功），
+// 仍正常出报告，缺失批的题走合并默认文案（裁决 #9 前者文案逐字）。
 func TestEvaluateSessionWithoutSplitUsesMergeDefault(t *testing.T) {
-	questions := []QuestionDTO{
-		mainQuestion(0, "主零", "MYSQL", answered("答零")),
-		mainQuestion(1, "主一", "REDIS", answered("答一")),
+	questions := make([]QuestionDTO, 0, 9)
+	for i := 0; i < 9; i++ {
+		questions = append(questions, mainQuestion(i, fmt.Sprintf("题目%d", i),
+			"MYSQL", answered(fmt.Sprintf("回答%d", i))))
 	}
-	stub := &evalStubCompleter{respond: func(call int, system, user string) (string, error) {
-		return "", errors.New("模拟模型失败")
-	}}
+	stub := &evalStubCompleter{respond: respondSummaryOK(func(call int, user string) (string, error) {
+		indexes := promptIndexes(user)
+		if containsInt(indexes, 8) {
+			return "", errors.New("模拟第二批次模型失败")
+		}
+		return batchReportJSONFor(indexes, func(int) int { return 60 }), nil
+	})}
 	cfg := DefaultEvaluationConfig()
 	cfg.FallbackSplitEnabled = false
 	engine := NewEvaluationEngine(cfg, nil)
@@ -645,16 +652,92 @@ func TestEvaluateSessionWithoutSplitUsesMergeDefault(t *testing.T) {
 	report, err := engine.EvaluateSession(context.Background(), stub, newTestInvoker(),
 		EvaluateInput{SessionID: "sess-1", Questions: questions})
 	if err != nil {
-		t.Fatalf("评估失败: %v", err)
+		t.Fatalf("部分成功不应返回错误: %v", err)
 	}
-	// 批失败 + 汇总失败，共 2 次调用
-	if len(stub.calls) != 2 {
-		t.Fatalf("LLM 调用次数 want 2 got %d", len(stub.calls))
+	// 批1成功 + 批2失败 + 汇总，共 3 次调用
+	if len(stub.calls) != 3 {
+		t.Fatalf("LLM 调用次数 want 3 got %d", len(stub.calls))
 	}
 	for i, detail := range report.QuestionDetails {
-		if detail.Score != 0 || detail.Feedback != "该题未成功生成评估结果，系统按 0 分处理。" {
-			t.Errorf("题%d 应走合并默认文案: %d %q", i, detail.Score, detail.Feedback)
+		if i == 8 {
+			if detail.Score != 0 || detail.Feedback != "该题未成功生成评估结果，系统按 0 分处理。" {
+				t.Errorf("题%d 应走合并默认文案: %d %q", i, detail.Score, detail.Feedback)
+			}
+			continue
 		}
+		if detail.Score != 60 || detail.Feedback != fmt.Sprintf("评语-%d", i) {
+			t.Errorf("题%d 批1结果未生效: %d %q", i, detail.Score, detail.Feedback)
+		}
+	}
+}
+
+// ===== 引擎：全批失败上抛（主控仲裁，有意偏离 Java）=====
+
+// 契约：成功的批数 == 0 且总题数 > 0（stub 全失败、连显式降级产物都没有）时
+// 返回 error 而非全零报告；错误信息含可定位信息（sessionId/批数/题数）。
+func TestEvaluateSessionAllBatchesFailedReturnsError(t *testing.T) {
+	questions := []QuestionDTO{
+		mainQuestion(0, "主零", "MYSQL", answered("答零")),
+		mainQuestion(1, "主一", "REDIS", answered("答一")),
+	}
+	stub := &evalStubCompleter{respond: func(call int, system, user string) (string, error) {
+		return "", errors.New("模拟模型持续失败")
+	}}
+	cfg := DefaultEvaluationConfig()
+	cfg.FallbackSplitEnabled = false // 无降级产物：报告为 nil 的极端情况
+	engine := NewEvaluationEngine(cfg, nil)
+
+	report, err := engine.EvaluateSession(context.Background(), stub, newTestInvoker(),
+		EvaluateInput{SessionID: "sess-err-1", Questions: questions})
+	if err == nil {
+		t.Fatal("全批失败应返回 error 而非全零报告")
+	}
+	if report != nil {
+		t.Errorf("error 时不应返回报告: %+v", report)
+	}
+	for _, want := range []string{"sess-err-1", "全部 1 个评估批次均未产出逐题评估结果", "题数=2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误信息缺少可定位信息 %q: %v", want, err)
+		}
+	}
+	// 上抛前不再发起汇总调用
+	if len(stub.calls) != 1 {
+		t.Errorf("LLM 调用次数 want 1 got %d", len(stub.calls))
+	}
+}
+
+// 契约：单批成功 + 单批降级（批恢复显式降级 0 分）= 部分成功，不报错，
+// 报告含显式降级文案（裁决 #9 后者文案逐字）。
+func TestEvaluateSessionPartialSuccessWithDegradedKeepsReport(t *testing.T) {
+	questions := make([]QuestionDTO, 0, 9)
+	for i := 0; i < 9; i++ {
+		questions = append(questions, mainQuestion(i, fmt.Sprintf("题目%d", i),
+			"MYSQL", answered(fmt.Sprintf("回答%d", i))))
+	}
+	stub := &evalStubCompleter{respond: respondSummaryOK(func(call int, user string) (string, error) {
+		indexes := promptIndexes(user)
+		if containsInt(indexes, 8) {
+			return "", errors.New("模拟第二批次模型失败")
+		}
+		return batchReportJSONFor(indexes, func(int) int { return 70 }), nil
+	})}
+
+	report, err := newTestEngine().EvaluateSession(context.Background(), stub, newTestInvoker(),
+		EvaluateInput{SessionID: "sess-1", Questions: questions})
+	if err != nil {
+		t.Fatalf("单批成功+单批降级不应报错: %v", err)
+	}
+	// 批1成功 + 批2失败 + 叶子加试失败 + 汇总，共 4 次调用
+	if len(stub.calls) != 4 {
+		t.Fatalf("LLM 调用次数 want 4 got %d", len(stub.calls))
+	}
+	if report.QuestionDetails[8].Score != 0 ||
+		report.QuestionDetails[8].Feedback != "模型评估失败后的系统降级，该分数不代表真实表现。" {
+		t.Errorf("题8 应为显式降级产物: %d %q",
+			report.QuestionDetails[8].Score, report.QuestionDetails[8].Feedback)
+	}
+	if report.QuestionDetails[0].Feedback != "评语-0" {
+		t.Errorf("题0 成功批结果未生效: %q", report.QuestionDetails[0].Feedback)
 	}
 }
 

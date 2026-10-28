@@ -13,10 +13,21 @@ import (
 // Repo interview_sessions / interview_answers 数据访问。
 type Repo struct {
 	db *gorm.DB
+	// 历史去重窗口（app.interview.history_* 配置，<1 回落 Java 常量默认值）。
+	historyMaxSessions  int
+	historyMaxQuestions int
 }
 
 // NewRepo 创建仓库。
-func NewRepo(db *gorm.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db *gorm.DB, cfg Config) *Repo {
+	if cfg.HistoryMaxSessions < 1 {
+		cfg.HistoryMaxSessions = maxHistoricalSessions
+	}
+	if cfg.HistoryMaxQuestions < 1 {
+		cfg.HistoryMaxQuestions = maxHistoricalQuestions
+	}
+	return &Repo{db: db, historyMaxSessions: cfg.HistoryMaxSessions, historyMaxQuestions: cfg.HistoryMaxQuestions}
+}
 
 // DB 暴露底层连接供事务使用。
 func (r *Repo) DB() *gorm.DB { return r.db }
@@ -251,7 +262,8 @@ func (r *Repo) ResumeExists(ctx context.Context, resumeID int64) (bool, error) {
 
 // ===== 历史去重（出题输入，对齐 Java InterviewPersistenceService.getHistoricalQuestions）=====
 
-// 历史查询窗口（对齐 Java findTop10… 与 MAX_HISTORICAL_QUESTIONS）。
+// 历史查询窗口默认值（对齐 Java findTop10… 与 MAX_HISTORICAL_QUESTIONS；
+// 可经 app.interview.history_* 配置覆盖）。
 const (
 	maxHistoricalSessions  = 10
 	maxHistoricalQuestions = 60
@@ -267,13 +279,13 @@ type HistoricalQuestion struct {
 
 // GetHistoricalQuestions 出题去重输入（对齐 Java getHistoricalQuestions，370-401 行）：
 // 有 resumeId 时按 resumeId + skillId 精确匹配，无 resumeId 时按 skillId 查全部；
-// 均取最近 10 场（created_at desc），解析 questions_json 取主问题，
-// 按题面去重（保持首见顺序）、最多 60 条；单场 JSON 解析失败跳过该场（对齐 Java log-and-empty）。
+// 均取最近 N 场（created_at desc，默认 10），解析 questions_json 取主问题，
+// 按题面去重（保持首见顺序）、最多 M 条（默认 60）；单场 JSON 解析失败跳过该场（对齐 Java log-and-empty）。
 func (r *Repo) GetHistoricalQuestions(ctx context.Context, skillID string, resumeID *int64) ([]HistoricalQuestion, error) {
 	var rows []SessionEntity
 	q := r.db.WithContext(ctx).Model(&SessionEntity{}).
 		Select("session_id", "questions_json").
-		Order("created_at DESC").Limit(maxHistoricalSessions)
+		Order("created_at DESC").Limit(r.historyMaxSessions)
 	if resumeID != nil {
 		q = q.Where("resume_id = ? AND skill_id = ?", *resumeID, skillID)
 	} else {
@@ -289,11 +301,11 @@ func (r *Repo) GetHistoricalQuestions(ctx context.Context, skillID string, resum
 			jsons = append(jsons, *row.QuestionsJSON)
 		}
 	}
-	return collectHistoricalQuestions(jsons), nil
+	return collectHistoricalQuestions(jsons, r.historyMaxQuestions), nil
 }
 
-// collectHistoricalQuestions 纯逻辑（可单测）：逐场解析 → 过滤追问 → 题面去重 → 截 60 条。
-func collectHistoricalQuestions(sessionJSONs []string) []HistoricalQuestion {
+// collectHistoricalQuestions 纯逻辑（可单测）：逐场解析 → 过滤追问 → 题面去重 → 截 limit 条。
+func collectHistoricalQuestions(sessionJSONs []string, limit int) []HistoricalQuestion {
 	seen := map[string]bool{}
 	out := []HistoricalQuestion{}
 	for _, js := range sessionJSONs {
@@ -311,7 +323,7 @@ func collectHistoricalQuestions(sessionJSONs []string) []HistoricalQuestion {
 				Type:         categoryValue(q.Type),
 				TopicSummary: q.TopicSummary,
 			})
-			if len(out) >= maxHistoricalQuestions {
+			if len(out) >= limit {
 				return out
 			}
 		}

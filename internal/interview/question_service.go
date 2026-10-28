@@ -17,7 +17,7 @@ import (
 )
 
 // 四组出题 prompt 逐字节拷贝自 Java 参考实现 app/src/main/resources/prompts/
-//（{xxx} 为占位符，运行时按 Java 变量名替换）。
+// （{xxx} 为占位符，运行时按 Java 变量名替换）。
 var (
 	//go:embed prompts/interview-question-skill-system.st
 	skillSystemPromptTemplate string
@@ -111,6 +111,8 @@ type QuestionGenParams struct {
 
 // GenerateQuestionsBySkill 出题总入口（对齐 Java generateQuestionsBySkill，121-191 行）：
 // 方向解析（custom 临时构建）→ 难度描述 → LLM 客户端 → 无简历单路 / 有简历双路并行。
+// 失败分层（spec 用户故事 21 / 笔记 02 §4）：LLM 调用失败、输出不合法 → 静态兜底题，
+// 不向上报错（功能不因模型故障不可用）；Provider 解析错误（未知 provider）→ 透传业务错误。
 func (s *QuestionService) GenerateQuestionsBySkill(ctx context.Context, p QuestionGenParams) ([]QuestionDTO, error) {
 	skill, err := s.resolveSkill(p.SkillID, p.CustomCategories, p.JDText)
 	if err != nil {
@@ -130,7 +132,7 @@ func (s *QuestionService) GenerateQuestionsBySkill(ctx context.Context, p Questi
 
 	hasResume := p.ResumeText != nil && strings.TrimSpace(*p.ResumeText) != ""
 	if !hasResume {
-		return s.generateDirectionOnly(ctx, cm, skill, difficultyDesc, p.QuestionCount, historicalSection)
+		return s.generateDirectionOrFallback(ctx, cm, skill, difficultyDesc, p.QuestionCount, historicalSection)
 	}
 
 	// 简历题/方向题比例切分（对齐 Java 143-144 行）：
@@ -174,7 +176,7 @@ func (s *QuestionService) GenerateQuestionsBySkill(ctx context.Context, p Questi
 			s.logger.Error("简历题生成失败，降级为全方向题", slog.String("error", resumeRes.err.Error()))
 		}
 		dirCancel()
-		return s.generateDirectionOnly(ctx, cm, skill, difficultyDesc, p.QuestionCount, historicalSection)
+		return s.generateDirectionOrFallback(ctx, cm, skill, difficultyDesc, p.QuestionCount, historicalSection)
 	}
 	resumeQuestions := resumeRes.questions
 
@@ -240,8 +242,8 @@ func (s *QuestionService) generateResumeQuestions(ctx context.Context, cm ai.Cha
 
 // generateDirectionOnly 方向题路（对齐 Java 230-278 行）：
 // 分配表 → 参考题库/JD 注入 → 结构化调用；主问题数为 0 回退兜底题；
-// 失败上抛（Go 结构化调用器失败一律为业务错误，等价 Java BusinessException 上抛，
-// 由调用方按路径失败降级）。
+// LLM 失败上抛给调用方按路径降级（双路并行的路径级降级语义需要区分成败），
+// 终态入口统一经 generateDirectionOrFallback 落静态兜底题。
 func (s *QuestionService) generateDirectionOnly(ctx context.Context, cm ai.ChatCompleter,
 	skill *SkillDTO, difficultyDesc string, questionCount int, historicalSection string) ([]QuestionDTO, error) {
 
@@ -285,6 +287,21 @@ func (s *QuestionService) generateDirectionOnly(ctx context.Context, cm ai.ChatC
 	if s.logger != nil {
 		s.logger.Info("方向题生成完成",
 			slog.Int("请求", questionCount), slog.Int("实际主问题", countMainQuestions(questions)))
+	}
+	return questions, nil
+}
+
+// generateDirectionOrFallback 方向题终态降级（失败分层，spec 用户故事 21）：
+// LLM 调用失败/输出不合法 → 静态兜底题（不报错）；Provider 解析错误已在
+// GenerateQuestionsBySkill 路径外透传，不会进入本封装。
+func (s *QuestionService) generateDirectionOrFallback(ctx context.Context, cm ai.ChatCompleter,
+	skill *SkillDTO, difficultyDesc string, questionCount int, historicalSection string) ([]QuestionDTO, error) {
+	questions, err := s.generateDirectionOnly(ctx, cm, skill, difficultyDesc, questionCount, historicalSection)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("方向题生成失败，回退到默认问题", slog.String("error", err.Error()))
+		}
+		return s.generateFallbackQuestions(skill, questionCount), nil
 	}
 	return questions, nil
 }
@@ -334,7 +351,7 @@ func DefaultChatProviderID(providerID *string, defaultID string) string {
 
 // convertToQuestions LLM 输出 → 题目列表（对齐 Java convertToQuestions，315-341 行）：
 // 跳过空白题面；type 大写、空白兜底 GENERAL；追问展开为主问题后的独立题目
-//（isFollowUp=true、parentQuestionIndex 指向主问题）。
+// （isFollowUp=true、parentQuestionIndex 指向主问题）。
 func (s *QuestionService) convertToQuestions(dto *llmQuestionList) []QuestionDTO {
 	questions := []QuestionDTO{}
 	index := 0
@@ -540,7 +557,7 @@ func categoryValue(s *string) string {
 }
 
 // fmtAllocation 分配表的日志摘要（键排序保证稳定）。
-func fmtAllocation(allocation map[string]int) string {
+func fmtAllocation(allocation CategoryAllocation) string {
 	keys := make([]string, 0, len(allocation))
 	for k := range allocation {
 		keys = append(keys, k)

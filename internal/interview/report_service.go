@@ -67,7 +67,10 @@ func (s *ReportService) GetReport(ctx context.Context, sessionID string) (*Repor
 }
 
 // generateReportSync 同步兜底评估（对齐 Java generateReport，笔记 05 §8）：
-// 同步跑引擎 → 缓存状态置 EVALUATED → saveReport 落库（保存失败仅告警）。
+// 同步跑引擎 → 缓存状态置 EVALUATED → saveReport 落库。
+// 保存失败上抛 error（对齐 Java 抛异常语义 + docs/经验-AI调用超时与异步任务兜底.md
+// 的教训：失败被告警吞掉会绕过重试/FAILED 容错链路）；缓存状态更新失败仍仅告警
+// （易失缓存可由后续读取从 DB 恢复）。
 func (s *ReportService) generateReportSync(ctx context.Context, entity *SessionEntity) (*ReportDTO, error) {
 	s.logger.Info("生成面试报告", slog.String("sessionId", entity.SessionID))
 
@@ -95,7 +98,7 @@ func (s *ReportService) generateReportSync(ctx context.Context, entity *SessionE
 		}
 	}
 	if err := saveReport(ctx, s.store, s.logger, entity.SessionID, report); err != nil {
-		s.logger.Warn("保存报告到数据库失败", slog.String("sessionId", entity.SessionID), slog.String("error", err.Error()))
+		return nil, apperr.Wrap(apperr.CodeInternalError, "保存报告到数据库失败", err)
 	}
 	return report, nil
 }

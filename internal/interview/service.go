@@ -20,14 +20,20 @@ type Service struct {
 	invoker   *ai.StructuredInvoker
 	sanitizer *PromptSanitizer
 
+	// 参考题库截断预算（app.interview.* 配置，<1 回落 Java 常量默认值）。
+	maxReferenceSectionChars           int
+	maxEvaluationReferenceSectionChars int
+	maxSingleReferenceChars            int
+
 	// referenceFileList JD 解析 system prompt 的参考文件清单，启动时构建一次（资源只读）。
 	referenceFileList string
 }
 
 // NewService 从嵌入的 skills 资源构建服务（对齐 Java @PostConstruct loadPresetSkills 的启动语义）。
 // 注册表构建失败（front matter 缺失、YAML 非法）返回错误，由启动方决定退出。
-// models 为本模块唯一的 LLM 接缝，由 main 用 *aibridge.Bridge 注入。
-func NewService(models ModelResolver, invoker *ai.StructuredInvoker, logger *slog.Logger) (*Service, error) {
+// models 为本模块唯一的 LLM 接缝，由 main 用 *aibridge.Bridge 注入；
+// cfg 提供参考题库截断预算（0/负值回落 Java 常量默认值）。
+func NewService(models ModelResolver, invoker *ai.StructuredInvoker, cfg Config, logger *slog.Logger) (*Service, error) {
 	fsys := EmbeddedSkills()
 	reg, skipped, err := LoadRegistry(fsys)
 	if err != nil {
@@ -40,14 +46,25 @@ func NewService(models ModelResolver, invoker *ai.StructuredInvoker, logger *slo
 		slog.Int("count", len(reg.SkillIDs())),
 		slog.Int("skipped", len(skipped)))
 	return &Service{
-		reg:               reg,
-		fsys:              fsys,
-		logger:            logger,
-		models:            models,
-		invoker:           invoker,
-		sanitizer:         NewPromptSanitizer(logger),
-		referenceFileList: reg.ReferenceFileList(),
+		reg:                                reg,
+		fsys:                               fsys,
+		logger:                             logger,
+		models:                             models,
+		invoker:                            invoker,
+		sanitizer:                          NewPromptSanitizer(logger),
+		maxReferenceSectionChars:           positiveOr(cfg.MaxReferenceSectionChars, MaxReferenceSectionChars),
+		maxEvaluationReferenceSectionChars: positiveOr(cfg.MaxEvaluationReferenceSectionChars, MaxEvaluationReferenceSectionChars),
+		maxSingleReferenceChars:            positiveOr(cfg.MaxSingleReferenceChars, MaxSingleReferenceChars),
+		referenceFileList:                  reg.ReferenceFileList(),
 	}, nil
+}
+
+// positiveOr 配置值 < 1 时回落默认值。
+func positiveOr(value, fallback int) int {
+	if value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // ListSkills GET /api/interview/skills：全部预设方向（按 ID 升序）。

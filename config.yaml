@@ -59,8 +59,16 @@ app:
     api_key_encryption_key: "cbb8990d9e8a1a784bd3aa38cf45068f19d7238fe71d6f48"
     # 未配置密钥时是否允许开发 fallback（与 Java allow-fallback-encryption-key 一致）
     allow_fallback_encryption_key: true
-    # 结构化输出（简历评分）解析失败重试次数
+    # 结构化输出解析失败的业务层重试次数（Java structured-max-attempts，总调用 ≤ 此值）
     structured_max_attempts: 2
+    # 重试时是否将上次错误原因注入提示词（Java structured-include-last-error）
+    structured_include_last_error: true
+    # 是否启用修复型重试提示词（Java structured-retry-use-repair-prompt）
+    structured_retry_use_repair_prompt: true
+    # 修复型重试提示词是否追加严格 JSON 指令（Java structured-retry-append-strict-json-instruction）
+    structured_retry_append_strict_json_instruction: true
+    # 注入重试提示词的错误信息最大长度（Java structured-error-message-max-length）
+    structured_error_message_max_length: 200
     # LLM 单次调用超时：长简历的长输出评分可能需要数分钟，过短会误杀慢而成功的响应；
     # 失败由 Stream 消费者的 3 次重试兜底
     llm_call_timeout: 300s
@@ -118,6 +126,30 @@ app:
     create_lock_lease: 600s
     # 幂等结果键 TTL（Java CREATE_RESULT_TTL = 1 天）
     create_result_ttl: 24h
+    # 历史去重（出题输入，Java getHistoricalQuestions：最近 10 场、最多 60 条）
+    history_max_sessions: 10
+    history_max_questions: 60
+    # 参考题库截断（Java MAX_SINGLE_REFERENCE_CHARS=3000 /
+    # MAX_REFERENCE_SECTION_CHARS=12000 / MAX_EVALUATION_REFERENCE_SECTION_CHARS=6000）
+    max_single_reference_chars: 3000
+    max_reference_section_chars: 12000
+    max_evaluation_reference_section_chars: 6000
+    # 限流额度（Java @RateLimit 注解参数，窗口 1s：创建 全局5/IP5、提交答案 全局10、parse-jd IP5）
+    rate_limit:
+      create_global_per_second: 5
+      create_ip_per_second: 5
+      submit_global_per_second: 10
+      parse_jd_ip_per_second: 5
+    # 评估引擎（Java app.interview.evaluation）
+    evaluation:
+      batch_size: 8
+      # 批次失败后按问答组二分重试（共享额外调用预算）
+      fallback_split_enabled: true
+      fallback_max_extra_calls: 6
+      fallback_min_groups: 2
+      # 评估输入截断（Java 简历摘要 3000 / MAX_REFERENCE_CONTEXT_CHARS=6000）
+      resume_max_chars: 3000
+      max_reference_chars: 6000
 
   storage:
     endpoint: http://localhost:9000

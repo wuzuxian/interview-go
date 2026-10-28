@@ -429,7 +429,8 @@ func TestCreateRequestUnmarshal(t *testing.T) {
 }
 
 // 契约：app.interview 配置段默认值（Java executeWithLock 185s/600s、结果键 1 天、
-// 会话缓存 24h、题量 3-20、追问 1）。
+// 会话缓存 24h、题量 3-20、追问 1、历史去重 10/60、截断 3000/12000/6000/3000/6000、
+// 限流额度 5/5/10/5）。
 func TestInterviewConfigDefaults(t *testing.T) {
 	cfg := config.New()
 	var c Config
@@ -447,5 +448,20 @@ func TestInterviewConfigDefaults(t *testing.T) {
 	}
 	if c.CreateResultTTL != 24*time.Hour || c.SessionCacheTTL != 24*time.Hour {
 		t.Fatalf("结果键/缓存 TTL 默认值不符: %s / %s", c.CreateResultTTL, c.SessionCacheTTL)
+	}
+	if c.HistoryMaxSessions != 10 || c.HistoryMaxQuestions != 60 {
+		t.Fatalf("历史去重默认值不符: %d / %d", c.HistoryMaxSessions, c.HistoryMaxQuestions)
+	}
+	if c.MaxSingleReferenceChars != 3000 || c.MaxReferenceSectionChars != 12000 ||
+		c.MaxEvaluationReferenceSectionChars != 6000 {
+		t.Fatalf("参考截断默认值不符: %d / %d / %d", c.MaxSingleReferenceChars,
+			c.MaxReferenceSectionChars, c.MaxEvaluationReferenceSectionChars)
+	}
+	if c.Evaluation.ResumeMaxChars != 3000 || c.Evaluation.MaxReferenceChars != 6000 {
+		t.Fatalf("评估截断默认值不符: %d / %d", c.Evaluation.ResumeMaxChars, c.Evaluation.MaxReferenceChars)
+	}
+	if c.RateLimit.CreateGlobalPerSecond != 5 || c.RateLimit.CreateIPPerSecond != 5 ||
+		c.RateLimit.SubmitGlobalPerSecond != 10 || c.RateLimit.ParseJdIPPerSecond != 5 {
+		t.Fatalf("限流额度默认值不符: %+v", c.RateLimit)
 	}
 }

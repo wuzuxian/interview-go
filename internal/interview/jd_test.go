@@ -60,7 +60,7 @@ func (m *scriptedModel) Generate(ctx context.Context, input []*schema.Message, o
 func newJdTestService(t *testing.T, m *scriptedModel, resolverErr error) *Service {
 	t.Helper()
 	svc, err := NewService(&stubResolver{cm: m, err: resolverErr},
-		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), discardLogger())
+		ai.NewStructuredInvoker(ai.DefaultStructuredConfig(), discardLogger()), Config{}, discardLogger())
 	if err != nil {
 		t.Fatalf("NewService 失败: %v", err)
 	}

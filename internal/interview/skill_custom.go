@@ -21,7 +21,7 @@ var crlfPattern = regexp.MustCompile(`[\r\n]+`)
 
 // BuildCustomSkill 用 JD 解析出的分类临时构建自定义方向（不落库，spec 决策 11）。
 // LLM 给出的 ref/shared 仅是建议值：key 命中 categoryRefIndex 时按本地映射纠正
-//（未命中时保留 LLM 的 ref，shared 恒按 true 处理——对齐 Java Boolean.TRUE.equals）。
+// （未命中时保留 LLM 的 ref，shared 恒按 true 处理——对齐 Java Boolean.TRUE.equals）。
 // persona 为 null（无 SKILL.md），出题时不注入人设段。
 func (s *Service) BuildCustomSkill(customCategories []CategoryDTO, jdText string) *SkillDTO {
 	categories := make([]CategoryDTO, 0, len(customCategories))

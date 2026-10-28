@@ -44,18 +44,18 @@ func (r *EngineRunner) Evaluate(ctx context.Context, input EvaluateInput, provid
 	provider := DefaultChatProviderID(providerID, r.models.DefaultChatID())
 	completer, err := r.models.JSONChatModelFor(ctx, provider)
 	if err != nil {
-		return nil, evaluationFailed(err)
+		return nil, wrapEvaluationError(err)
 	}
 	report, err := r.engine.EvaluateSession(ctx, completer, r.invoker, input)
 	if err != nil {
-		return nil, evaluationFailed(err)
+		return nil, wrapEvaluationError(err)
 	}
 	return report, nil
 }
 
-// evaluationFailed 异常归一（对齐 Java catch BusinessException 原样透传、
+// wrapEvaluationError 异常归一（对齐 Java catch BusinessException 原样透传、
 // catch Exception → INTERVIEW_EVALUATION_FAILED "面试评估失败"）。
-func evaluationFailed(err error) error {
+func wrapEvaluationError(err error) error {
 	var ae *apperr.AppError
 	if errors.As(err, &ae) {
 		return ae

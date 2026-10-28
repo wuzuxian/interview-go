@@ -28,8 +28,8 @@ type InterviewReportInput struct {
 	StatusText      string // 已创建/进行中/已完成/已评估（Java getStatusText 逐字）
 	CreatedAt       time.Time
 	CompletedAt     *time.Time
-	OverallScore    *int    // nil → 跳过"综合评分"节（Java 逐字）
-	OverallFeedback string  // 空 → 跳过"总体评价"节
+	OverallScore    *int     // nil → 跳过"综合评分"节（Java 逐字）
+	OverallFeedback string   // 空 → 跳过"总体评价"节
 	Strengths       []string // 空 → 跳过"表现优势"节
 	Improvements    []string // 空 → 跳过"改进建议"节
 	CategoryScores  []InterviewCategoryScore
@@ -49,7 +49,7 @@ type InterviewQuestionBlock struct {
 	Category        string // 空 → "综合"
 	IsFollowUp      bool   // 追问标记
 	Question        string
-	UserAnswer      *string  // nil → "未回答"
+	UserAnswer      *string // nil → "未回答"
 	Score           int
 	Feedback        string   // 空 → 跳过"评价:"
 	ReferenceAnswer string   // 空 → 跳过"参考答案:"

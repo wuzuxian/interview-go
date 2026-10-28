@@ -36,6 +36,10 @@ type AppConfig struct {
 		EncryptionKey            string                              `config:"api_key_encryption_key"`
 		AllowFallbackKey         bool                                `config:"allow_fallback_encryption_key" default:"false"`
 		StructuredMaxAttempts    int                                 `config:"structured_max_attempts" default:"2"`
+		StructuredIncludeLastError            bool   `config:"structured_include_last_error" default:"true"`
+		StructuredRetryUseRepairPrompt        bool   `config:"structured_retry_use_repair_prompt" default:"true"`
+		StructuredRetryAppendStrictJSONInstruction bool `config:"structured_retry_append_strict_json_instruction" default:"true"`
+		StructuredErrorMessageMaxLength       int    `config:"structured_error_message_max_length" default:"200"`
 		LLMCallTimeout           time.Duration                       `config:"llm_call_timeout" default:"120s"`
 		Providers                map[string]llmprovider.SeedProvider `config:"providers"`
 	} `config:"ai"`
@@ -131,6 +135,12 @@ func main() {
 	if appCfg.AI.StructuredMaxAttempts > 0 {
 		structuredCfg.MaxAttempts = appCfg.AI.StructuredMaxAttempts
 	}
+	structuredCfg.IncludeLastError = appCfg.AI.StructuredIncludeLastError
+	structuredCfg.RetryUseRepairPrompt = appCfg.AI.StructuredRetryUseRepairPrompt
+	structuredCfg.AppendStrictJSONInstruction = appCfg.AI.StructuredRetryAppendStrictJSONInstruction
+	if appCfg.AI.StructuredErrorMessageMaxLength > 0 {
+		structuredCfg.ErrorMessageMaxLength = appCfg.AI.StructuredErrorMessageMaxLength
+	}
 	invoker := ai.NewStructuredInvoker(structuredCfg, slogger)
 
 	bridge := aibridge.New(registry, crypto, appCfg.AI.LLMCallTimeout, slogger)
@@ -188,7 +198,7 @@ func main() {
 
 	// 面试模块：启动时解析嵌入的 skills 资源，构建方向注册表；
 	// LLM 调用经 ModelResolver 接缝由 *aibridge.Bridge 注入（spec 决策 3，唯一新增接缝）。
-	interviewSvc, err := interview.NewService(bridge, invoker, slogger)
+	interviewSvc, err := interview.NewService(bridge, invoker, appCfg.Interview, slogger)
 	if err != nil {
 		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -197,14 +207,22 @@ func main() {
 	questionSvc := interview.NewQuestionService(interviewSvc, bridge, invoker, appCfg.Interview.FollowUpCount, slogger)
 	// 场次子系统（票 03/04）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
 	sessionCache := interview.NewSessionCache(rdb.Client, appCfg.Interview, slogger)
-	sessionRepo := interview.NewRepo(db.DB)
+	sessionRepo := interview.NewRepo(db.DB, appCfg.Interview)
 
 	// 评估链路（票 06）：Redis Stream 评估队列——生产者即 EvaluateEnqueuer 扩展点
 	// （末题交卷/提前交卷入队），消费者 + 恢复调度器照 resume 模块的接线方式启停。
 	evalStream := interview.NewRedisEvalStream(rdb.Client)
 	evalTracker := interview.NewRedisEvalInflight(rdb.Client)
 	evalProducer := interview.NewEvaluateStreamProducer(evalStream, evalTracker, sessionRepo, slogger)
-	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, questionSvc, appCfg.Interview, slogger, evalProducer)
+	sessionSvc := interview.NewSessionService(interview.SessionServiceDeps{
+		Repo:      sessionRepo,
+		Cache:     sessionCache,
+		Skills:    interviewSvc,
+		Questions: questionSvc,
+		Cfg:       appCfg.Interview,
+		Logger:    slogger,
+		Enqueuer:  evalProducer,
+	})
 	evalEngine := interview.NewEvaluationEngine(appCfg.Interview.Evaluation.EngineConfig(), slogger)
 	evalRunner := interview.NewEngineRunner(evalEngine, invoker, bridge, slogger)
 	evalConsumer := interview.NewEvaluateConsumer(evalStream, evalTracker, sessionRepo, evalRunner, interviewSvc, slogger)
@@ -222,7 +240,7 @@ func main() {
 
 	// 报告/明细节拍（票 06）：存量报告返回、同步兜底评估、明细组装。
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
-	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl)
+	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

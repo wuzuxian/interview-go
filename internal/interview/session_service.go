@@ -32,9 +32,29 @@ type SessionService struct {
 	enqueuer  EvaluateEnqueuer // 评估入队扩展点，票 06 注入；nil 时为空操作
 }
 
-// NewSessionService 创建场次服务。enqueuer 传 nil 表示评估入队未接入（票 06 前为空操作）。
-func NewSessionService(repo *Repo, cache *SessionCache, skills *Service, questions *QuestionService, cfg Config, logger *slog.Logger, enqueuer EvaluateEnqueuer) *SessionService {
-	return &SessionService{repo: repo, cache: cache, skills: skills, questions: questions, cfg: cfg, logger: logger, enqueuer: enqueuer}
+// SessionServiceDeps 场次服务依赖聚合（构造参数收敛，行为不变）。
+type SessionServiceDeps struct {
+	Repo      *Repo
+	Cache     *SessionCache
+	Skills    *Service
+	Questions *QuestionService
+	Cfg       Config
+	Logger    *slog.Logger
+	// Enqueuer 评估入队扩展点，票 06 注入；nil 表示评估入队未接入（空操作）。
+	Enqueuer EvaluateEnqueuer
+}
+
+// NewSessionService 创建场次服务。Enqueuer 传 nil 表示评估入队未接入（票 06 前为空操作）。
+func NewSessionService(deps SessionServiceDeps) *SessionService {
+	return &SessionService{
+		repo:      deps.Repo,
+		cache:     deps.Cache,
+		skills:    deps.Skills,
+		questions: deps.Questions,
+		cfg:       deps.Cfg,
+		logger:    deps.Logger,
+		enqueuer:  deps.Enqueuer,
+	}
 }
 
 // CreateSession POST /api/interview/sessions 入口：

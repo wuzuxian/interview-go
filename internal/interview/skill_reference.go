@@ -6,9 +6,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"strings"
+
+	"github.com/wuzuxian/interview/internal/strutil"
 )
 
-// 截断预算与提示文案（对齐 Java 常量与字符串字面量）。
+// 截断预算默认值（对齐 Java 常量，可经 app.interview.* 配置覆盖）与提示文案。
 const (
 	MaxReferenceSectionChars           = 12000
 	MaxEvaluationReferenceSectionChars = 6000
@@ -19,17 +21,17 @@ const (
 	noReferencesText      = "未配置 references。"
 )
 
-// BuildReferenceSection 出题侧入口：只注入分配数 > 0 的分类，总预算 12000（Java 328-334 行）。
-func (s *Service) BuildReferenceSection(skill *SkillDTO, allocation map[string]int) string {
+// BuildReferenceSection 出题侧入口：只注入分配数 > 0 的分类，总预算默认 12000（Java 328-334 行）。
+func (s *Service) BuildReferenceSection(skill *SkillDTO, allocation CategoryAllocation) string {
 	return s.buildReferenceSectionInternal(skill, func(cat CategoryDTO) bool {
 		return allocation[cat.Key] > 0
-	}, MaxReferenceSectionChars)
+	}, s.maxReferenceSectionChars)
 }
 
-// buildEvaluationReferenceSection 评估侧入口（票 08 使用）：覆盖全部配置了 ref 的分类，预算 6000。
+// buildEvaluationReferenceSection 评估侧入口（票 08 使用）：覆盖全部配置了 ref 的分类，预算默认 6000。
 func (s *Service) buildEvaluationReferenceSection(skill *SkillDTO) string {
 	return s.buildReferenceSectionInternal(skill, func(CategoryDTO) bool { return true },
-		MaxEvaluationReferenceSectionChars)
+		s.maxEvaluationReferenceSectionChars)
 }
 
 // BuildEvaluationReferenceSectionSafe 评估侧安全入口（票 06，对齐 Java
@@ -86,7 +88,7 @@ func (s *Service) buildReferenceSectionInternal(skill *SkillDTO, filter func(Cat
 
 		// 累计达预算：截断到预算并追加截断提示（对齐 Java setLength + append 语义）。
 		if text := sb.String(); runeLen(text) >= maxChars {
-			return truncateRunes(text, maxChars) + truncatedTotalMarker
+			return strutil.TruncateRunes(text, maxChars) + truncatedTotalMarker
 		}
 	}
 
@@ -113,8 +115,9 @@ func (s *Service) loadReferenceContent(skillID, ref string, shared bool) string 
 	return ""
 }
 
-// readReferenceContent 读取单个参考文件：trim 后超 3000 字符截断并追加单文件截断提示
-// （对齐 Java readReferenceContent，533-549 行）。嵌入资源读取失败按空内容处理（warn 不阻断）。
+// readReferenceContent 读取单个参考文件：trim 后超单文件预算（默认 3000 字符）截断
+// 并追加单文件截断提示（对齐 Java readReferenceContent，533-549 行）。
+// 嵌入资源读取失败按空内容处理（warn 不阻断）。
 func (s *Service) readReferenceContent(path string) string {
 	content, err := fs.ReadFile(s.fsys, path)
 	if err != nil {
@@ -124,20 +127,11 @@ func (s *Service) readReferenceContent(path string) string {
 		return ""
 	}
 	text := strings.TrimSpace(string(content))
-	if r := []rune(text); len(r) > MaxSingleReferenceChars {
-		return string(r[:MaxSingleReferenceChars]) + truncatedSingleMarker
+	if r := []rune(text); len(r) > s.maxSingleReferenceChars {
+		return string(r[:s.maxSingleReferenceChars]) + truncatedSingleMarker
 	}
 	return text
 }
 
 // runeLen 字符串的字符数（对齐 Java String.length() 的中文 BMP 语义，按 rune 计）。
 func runeLen(s string) int { return len([]rune(s)) }
-
-// truncateRunes 截断到 maxChars 个字符。
-func truncateRunes(s string, maxChars int) string {
-	r := []rune(s)
-	if len(r) <= maxChars {
-		return s
-	}
-	return string(r[:maxChars])
-}

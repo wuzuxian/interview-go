@@ -4,13 +4,17 @@ package interview
 
 import "strconv"
 
+// CategoryAllocation 分类题量分配表（分类 key → 分配题量），
+// 对齐 Java calculateAllocation 返回的 Map<String, Integer>。
+type CategoryAllocation map[string]int
+
 // CalculateAllocation 三阶段优先级分配（对齐 Java calculateAllocation，252-315 行）：
 // Phase 1 ALWAYS_ONE 各保底 1 题 → Phase 2 全类目各 1 题（CORE 先于 NORMAL，保证覆盖率）
 // → Phase 3 剩余名额按 CORE 优先、CORE/NORMAL 轮转。
 // priority 非 ALWAYS_ONE/CORE 一律按 NORMAL（Java switch default）。
 // 结束后 CORE/NORMAL 全类目都出现在结果中（数量可为 0）；ALWAYS_ONE 未获配时不出现。
 // 调用侧经 categories 顺序遍历该结果，故 map 无序不影响输出稳定性。
-func CalculateAllocation(categories []CategoryDTO, totalQuestions int) map[string]int {
+func CalculateAllocation(categories []CategoryDTO, totalQuestions int) CategoryAllocation {
 	var alwaysOneCats, coreCats, normalCats []CategoryDTO
 	for _, cat := range categories {
 		switch cat.Priority {
@@ -23,7 +27,7 @@ func CalculateAllocation(categories []CategoryDTO, totalQuestions int) map[strin
 		}
 	}
 
-	allocation := map[string]int{}
+	allocation := CategoryAllocation{}
 	remaining := totalQuestions
 
 	// Phase 1: ALWAYS_ONE 保底各 1 题。
@@ -89,7 +93,7 @@ func CalculateAllocation(categories []CategoryDTO, totalQuestions int) map[strin
 
 // BuildAllocationDescription 分配表转 Markdown（对齐 Java buildAllocationDescription，
 // 317-326 行）：按 categories 顺序，数量 > 0 的类目生成 "| label | n 题 | priority |" 行。
-func BuildAllocationDescription(allocation map[string]int, categories []CategoryDTO) string {
+func BuildAllocationDescription(allocation CategoryAllocation, categories []CategoryDTO) string {
 	var sb []byte
 	for _, cat := range categories {
 		count := allocation[cat.Key]

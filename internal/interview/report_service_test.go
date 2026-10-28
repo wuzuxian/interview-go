@@ -5,6 +5,7 @@ package interview
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/wuzuxian/interview/internal/apperr"
@@ -142,6 +143,31 @@ func TestGetReportSyncFallback(t *testing.T) {
 	events := rec.list()
 	if events[0] != "report-columns" {
 		t.Fatalf("应先写会话列: %v", events)
+	}
+}
+
+// 契约（经验文档教训，有意偏离 Java 的仅告警）：同步兜底评估的报告保存失败必须
+// 上抛 error——失败被告警吞掉会绕过重试/FAILED 容错链路，把失败固化为假完成。
+func TestGetReportSyncSaveFailureReturnsError(t *testing.T) {
+	rec := &evalTestRecorder{}
+	store := newFakeEvalStore(rec)
+	store.failReportCol = errors.New("db down")
+	runner := &stubEvalRunner{report: evalSampleReport()}
+	svc := NewReportService(store, runner, nil, nil, discardLogger())
+
+	session := evalTestSession(1, "s1", StatusCompleted, nil) // 未评估 → 同步兜底
+	session.QuestionsJSON = stringPtr(evalSampleQuestionsJSON(t))
+	store.addSession(session)
+
+	report, err := svc.GetReport(context.Background(), "s1")
+	if err == nil {
+		t.Fatal("报告保存失败应返回 error 而非仅告警")
+	}
+	if report != nil {
+		t.Errorf("error 时不应返回报告: %+v", report)
+	}
+	if ae := apperr.From(err); ae.Code != apperr.CodeInternalError {
+		t.Fatalf("保存失败应报内部错误: %+v", ae)
 	}
 }
 

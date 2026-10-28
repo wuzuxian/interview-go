@@ -16,6 +16,7 @@ import (
 
 	"github.com/wuzuxian/interview/internal/ai"
 	"github.com/wuzuxian/interview/internal/apperr"
+	"github.com/wuzuxian/interview/internal/strutil"
 )
 
 // ===== 评估 prompt 资源（Java 原始字节拷贝，{xxx} 为占位符）=====
@@ -170,8 +171,10 @@ func NewEvaluationEngine(cfg EvaluationConfig, logger *slog.Logger) *EvaluationE
 }
 
 // EvaluateSession 评估整场面试（引擎唯一入口）：输入会话数据（简历文本、题目列表含作答），
-// 输出完整报告。失败路径（批失败、汇总失败）均显式降级而非报错，对齐 Java 语义；
-// error 仅在引擎无法启动评估（如 completer 缺失）时非空。
+// 输出完整报告。批失败、汇总失败均显式降级而非报错（对齐 Java）；唯一上抛口径（主控仲裁，
+// 第三处有意偏离 Java）：成功的批数 == 0 且总题数 > 0——即全部批次都没有产出任何可用
+// 逐题评估（连显式降级 0 分产物也没有）——返回 error 交消费者重试→FAILED，避免落全零
+// 假报告。显式降级 0 分算该批产物（Java 语义保留），部分成功/全降级仍正常出报告。
 func (e *EvaluationEngine) EvaluateSession(ctx context.Context, completer ai.ChatCompleter,
 	invoker *ai.StructuredInvoker, input EvaluateInput) (*ReportDTO, error) {
 	if completer == nil {
@@ -189,16 +192,22 @@ func (e *EvaluationEngine) EvaluateSession(ctx context.Context, completer ai.Cha
 	// 截断按 rune 计，对齐 Java String.length() 的中文 BMP 语义）。
 	resumeContext := input.ResumeText
 	if runeLen(resumeContext) > e.cfg.ResumeMaxChars {
-		resumeContext = truncateRunes(resumeContext, e.cfg.ResumeMaxChars) + resumeTruncatedSuffix
+		resumeContext = strutil.TruncateRunes(resumeContext, e.cfg.ResumeMaxChars) + resumeTruncatedSuffix
 	}
 	referenceBaseline := strings.TrimSpace(referenceContext)
 	if runeLen(referenceBaseline) > e.cfg.MaxReferenceChars {
-		referenceBaseline = truncateRunes(referenceBaseline, e.cfg.MaxReferenceChars) + referenceTruncatedSuffix
+		referenceBaseline = strutil.TruncateRunes(referenceBaseline, e.cfg.MaxReferenceChars) + referenceTruncatedSuffix
 	}
 
 	// 分批评估 → 合并 → 二次汇总 → 构建报告。
 	batchResults := e.evaluateInBatches(ctx, completer, invoker, input.SessionID,
 		resumeContext, referenceBaseline, qaRecords)
+	// 全批失败上抛（主控仲裁，有意偏离 Java）：无任何一批产出可用逐题评估时不再拼报告。
+	if countProducingBatches(batchResults) == 0 && len(qaRecords) > 0 {
+		return nil, apperr.New(apperr.CodeInterviewEvaluationFailed, fmt.Sprintf(
+			"面试评估失败：全部 %d 个评估批次均未产出逐题评估结果（sessionId=%s，题数=%d）",
+			len(batchResults), input.SessionID, len(qaRecords)))
+	}
 	merged := mergeQuestionEvaluations(batchResults)
 	fallbackFeedback := mergeOverallFeedback(batchResults)
 	fallbackStrengths := mergeListItems(batchResults, true)
@@ -412,6 +421,19 @@ func (e *EvaluationEngine) evaluateInBatches(ctx context.Context, completer ai.C
 		results = append(results, batchResult{questionIndexes: recordIndexes(flattened), report: report})
 	}
 	return results
+}
+
+// countProducingBatches 产出可用逐题评估的批数（仲裁口径的“成功的批数”）：
+// 显式降级报告也算该批产物（Java 语义保留，降级 0 分仍落报告）；
+// 报告为 nil 或不含任何逐题评估条目的批次不算。
+func countProducingBatches(results []batchResult) int {
+	n := 0
+	for _, r := range results {
+		if r.report != nil && len(r.report.QuestionEvaluations) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // evaluateBatch 单批结构化调用；任何失败返回 nil（让合并逻辑用零分兜底）。
@@ -782,11 +804,11 @@ func buildQuestionHighlights(qaRecords []qaRecord, evaluations []*questionEvalDT
 		}
 		shortQ := q.question
 		if runeLen(shortQ) > highlightQuestionMax {
-			shortQ = truncateRunes(shortQ, highlightQuestionMax) + "..."
+			shortQ = strutil.TruncateRunes(shortQ, highlightQuestionMax) + "..."
 		}
 		shortF := feedback
 		if runeLen(shortF) > highlightFeedbackMax {
-			shortF = truncateRunes(shortF, highlightFeedbackMax) + "..."
+			shortF = strutil.TruncateRunes(shortF, highlightFeedbackMax) + "..."
 		}
 		highlights = append(highlights,
 			fmt.Sprintf("- Q%d | %s | 分数:%d | 反馈:%s", q.questionIndex+1, shortQ, score, shortF))

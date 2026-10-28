@@ -20,40 +20,46 @@ type Controller struct {
 	sessions *SessionService
 	report   *ReportService
 	rl       *ratelimit.Limiter
+	limits   RateLimit // 限流额度（app.interview.rate_limit，窗口 1s 对齐 Java 注解默认）
 }
 
 // NewController 创建控制器。sessions/rl 为票 03 场次子系统，report 为票 06
 // 报告/明细节拍；skills 路由（票 01）与场次路由共存于同一控制器。
-func NewController(svc *Service, sessions *SessionService, report *ReportService, rl *ratelimit.Limiter) *Controller {
-	return &Controller{svc: svc, sessions: sessions, report: report, rl: rl}
+// limits 为限流额度（<1 回落 Java @RateLimit 注解参数默认值）。
+func NewController(svc *Service, sessions *SessionService, report *ReportService, rl *ratelimit.Limiter, limits RateLimit) *Controller {
+	limits.CreateGlobalPerSecond = positiveOr(limits.CreateGlobalPerSecond, 5)
+	limits.CreateIPPerSecond = positiveOr(limits.CreateIPPerSecond, 5)
+	limits.SubmitGlobalPerSecond = positiveOr(limits.SubmitGlobalPerSecond, 10)
+	limits.ParseJdIPPerSecond = positiveOr(limits.ParseJdIPPerSecond, 5)
+	return &Controller{svc: svc, sessions: sessions, report: report, rl: rl, limits: limits}
 }
 
 // RegisterRoutes 注册 /api/interview 下全部路由。
 // 列表/详情/unfinished/DELETE 与 Java 一致无 @RateLimit；
 // parse-jd 对齐 Java @RateLimit(dimension = IP, count = 5)（默认 interval=1s → 每秒 5 次/IP），
-// 按主控裁决 #6 用仓库现有 Redis 固定窗口中间件近似滑动窗口。
+// 按主控裁决 #6 用仓库现有 Redis 固定窗口中间件近似滑动窗口；额度读 app.interview.rate_limit。
 func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	h := g.Group("/interview")
 
 	skills := h.Group("/skills")
 	skills.GET("", ctl.listSkills)
 	skills.GET("/:id", ctl.getSkill)
-	skills.POST("/parse-jd", ctl.rl.Middleware(ratelimit.PerIP(5, time.Second)), ctl.parseJd)
+	skills.POST("/parse-jd", ctl.rl.Middleware(ratelimit.PerIP(int64(ctl.limits.ParseJdIPPerSecond), time.Second)), ctl.parseJd)
 
 	// 先注册静态段 unfinished，避免被 :sessionId 通配吞掉（gin 静态优先，仍按序靠前声明）。
 	h.GET("/sessions/unfinished/:resumeId", ctl.findUnfinishedSession)
 
-	// 创建限流：全局 5/s + IP 5/s，对齐 Java 双 @RateLimit 注解（可重复注解全部生效）。
+	// 创建限流：全局 + IP 各 5/s（对齐 Java 双 @RateLimit 注解，可重复注解全部生效）。
 	h.POST("/sessions", ctl.rl.Middleware(
-		ratelimit.Global(5, time.Second),
-		ratelimit.PerIP(5, time.Second),
+		ratelimit.Global(int64(ctl.limits.CreateGlobalPerSecond), time.Second),
+		ratelimit.PerIP(int64(ctl.limits.CreateIPPerSecond), time.Second),
 	), ctl.createSession)
 	h.GET("/sessions", ctl.listSessions)
 	h.GET("/sessions/:sessionId", ctl.getSession)
 	// 问答闭环（票 04）：提交答案全局限流 10/s（对齐 Java @RateLimit(GLOBAL, 10)）；
 	// 取题 / 暂存（PUT）/ 提前交卷与 Java 一致无 @RateLimit（笔记 03 §5）。
 	h.GET("/sessions/:sessionId/question", ctl.getCurrentQuestion)
-	h.POST("/sessions/:sessionId/answers", ctl.rl.Middleware(ratelimit.Global(10, time.Second)), ctl.submitAnswer)
+	h.POST("/sessions/:sessionId/answers", ctl.rl.Middleware(ratelimit.Global(int64(ctl.limits.SubmitGlobalPerSecond), time.Second)), ctl.submitAnswer)
 	h.PUT("/sessions/:sessionId/answers", ctl.saveAnswer)
 	h.POST("/sessions/:sessionId/complete", ctl.completeSession)
 	// 报告/明细（票 06）：与 Java 一致无 @RateLimit（笔记 03 §5）。
