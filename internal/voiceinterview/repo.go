@@ -134,6 +134,19 @@ func (r *Repo) FindDialogueMessages(ctx context.Context, sessionID int64) ([]Mes
 	return list, err
 }
 
+// InsertMessage 插入消息行；created_at/timestamp 为空时补当前时间（对齐 Java
+// VoiceInterviewMessageEntity @PrePersist onCreate：两者都在首次保存时写入）。
+func (r *Repo) InsertMessage(ctx context.Context, m *MessageEntity) error {
+	now := time.Now()
+	if m.CreatedAt == nil {
+		m.CreatedAt = &now
+	}
+	if m.Timestamp == nil {
+		m.Timestamp = &now
+	}
+	return r.db.WithContext(ctx).Create(m).Error
+}
+
 // DeleteSessionCascade 级联删除：同一事务内先删评估、再删消息、最后删会话
 // （对齐 Java deleteSession L681-690 的语句顺序）。会话不存在返回 ErrSessionNotFound。
 func (r *Repo) DeleteSessionCascade(ctx context.Context, sessionID int64) error {

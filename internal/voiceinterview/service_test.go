@@ -64,6 +64,7 @@ type fakeStore struct {
 	findErr      error
 	endErr       error
 	evalUpdErr   error
+	insertErr    error
 	updatePause  []pauseCall
 	updateResume []resumeCall
 	updateEnd    []*SessionEntity
@@ -206,6 +207,24 @@ func (s *fakeStore) CountDialogueMessages(ctx context.Context, sessionID int64) 
 	return int64(len(s.dialogues[sessionID])), nil
 }
 
+func (s *fakeStore) InsertMessage(ctx context.Context, m *MessageEntity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.add("insert-message")
+	if s.insertErr != nil {
+		return s.insertErr
+	}
+	now := time.Now()
+	if m.CreatedAt == nil {
+		m.CreatedAt = &now
+	}
+	if m.Timestamp == nil {
+		m.Timestamp = &now
+	}
+	s.dialogues[m.SessionID] = append(s.dialogues[m.SessionID], *m)
+	return nil
+}
+
 func (s *fakeStore) DeleteSessionCascade(ctx context.Context, sessionID int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,6 +271,13 @@ func (s *fakeStore) setDialogues(sessionID int64, msgs []MessageEntity) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dialogues[sessionID] = msgs
+}
+
+// dialogueRows 读取某会话已落库的消息行（并发安全副本）。
+func (s *fakeStore) dialogueRows(sessionID int64) []MessageEntity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]MessageEntity(nil), s.dialogues[sessionID]...)
 }
 
 // ===== 替身：会话缓存 =====
@@ -1109,4 +1135,95 @@ func indexOf(list []string, target string) int {
 		}
 	}
 	return -1
+}
+
+// start_phase 目标值仅接受 INTRO/TECH/PROJECT/HR（票 05 验收）：COMPLETED 不是可
+// 主动开始的阶段，与非法值同样忽略不落库不报错。
+func TestStartPhaseCompleted不可作为目标(t *testing.T) {
+	f := newFixture()
+	id := f.store.addSession(inProgressSession(time.Hour))
+	if err := f.svc.StartPhase(context.Background(), id, "COMPLETED"); err != nil {
+		t.Fatalf("COMPLETED 应忽略不报错: %v", err)
+	}
+	if len(f.store.updatePhase) != 0 {
+		t.Fatalf("COMPLETED 不应落库: %v", f.store.updatePhase)
+	}
+	// 四个合法值逐一放行（大小写归一由 StartPhase 的 ToUpper 完成）。
+	for _, p := range []VoicePhase{PhaseIntro, PhaseTech, PhaseProject, PhaseHR} {
+		f2 := newFixture()
+		id2 := f2.store.addSession(inProgressSession(time.Hour))
+		if err := f2.svc.StartPhase(context.Background(), id2, strings.ToLower(string(p))); err != nil {
+			t.Fatalf("start_phase %s 应放行: %v", p, err)
+		}
+		if len(f2.store.updatePhase) != 1 || f2.store.updatePhase[0].phase != p {
+			t.Fatalf("%s 应落库: %+v", p, f2.store.updatePhase)
+		}
+	}
+}
+
+// 开场消息落库（Java saveMessage(sessionId, null, aiReply) L276-296 开场路径）：
+// DIALOGUE 行、phase 取会话当前阶段、序号 = 非 SUMMARY 消息数 + 1、用户侧恒空；
+// 会话不存在仅告警、空白文案跳过。
+func TestSaveOpeningMessage落库语义(t *testing.T) {
+	f := newFixture()
+	e := inProgressSession(time.Hour)
+	e.CurrentPhase = phasePtr(PhaseIntro)
+	id := f.store.addSession(e)
+
+	if err := f.svc.SaveOpeningMessage(context.Background(), id, "  你好，我是本场面试官。 "); err != nil {
+		t.Fatalf("开场落库失败: %v", err)
+	}
+	rows := f.store.dialogueRows(id)
+	if len(rows) != 1 {
+		t.Fatalf("应落库一条开场消息: %d 条", len(rows))
+	}
+	row := rows[0]
+	if row.SessionID != id || row.MessageType != MessageDialogue {
+		t.Errorf("消息归属与类型不符: %+v", row)
+	}
+	if phaseValue(row.Phase) != "INTRO" {
+		t.Errorf("phase 应取会话当前阶段 INTRO: %v", row.Phase)
+	}
+	if row.SequenceNum == nil || *row.SequenceNum != 1 {
+		t.Errorf("首个开场序号应为 1: %v", row.SequenceNum)
+	}
+	if row.UserRecognizedText != nil {
+		t.Errorf("开场无用户话语，用户侧应为空: %v", row.UserRecognizedText)
+	}
+	if row.AiGeneratedText == nil || *row.AiGeneratedText != "你好，我是本场面试官。" {
+		t.Errorf("AI 侧应 trimToNull 后落库: %v", row.AiGeneratedText)
+	}
+	if row.Timestamp == nil || row.CreatedAt == nil {
+		t.Errorf("timestamp/created_at 应由 Repo 补当前时间（@PrePersist）: %v %v", row.Timestamp, row.CreatedAt)
+	}
+
+	// 序号递增：已有 1 条开场后再存一条 → 序号 2。
+	if err := f.svc.SaveOpeningMessage(context.Background(), id, "第二问"); err != nil {
+		t.Fatalf("第二次落库失败: %v", err)
+	}
+	rows = f.store.dialogueRows(id)
+	if len(rows) != 2 || rows[1].SequenceNum == nil || *rows[1].SequenceNum != 2 {
+		t.Fatalf("序号应递增为 2: %+v", rows)
+	}
+
+	// 空白文案：跳过。
+	if err := f.svc.SaveOpeningMessage(context.Background(), id, "   "); err != nil {
+		t.Fatalf("空白文案不应报错: %v", err)
+	}
+	if len(f.store.dialogueRows(id)) != 2 {
+		t.Fatal("空白文案不应落库")
+	}
+
+	// 会话不存在：仅告警，不报错不落库。
+	if err := f.svc.SaveOpeningMessage(context.Background(), 424242, "你好"); err != nil {
+		t.Fatalf("会话不存在不应报错: %v", err)
+	}
+
+	// 落库失败上抛（调用方记日志后中止开场推送）。
+	f2 := newFixture()
+	id2 := f2.store.addSession(inProgressSession(time.Hour))
+	f2.store.insertErr = errors.New("db down")
+	if err := f2.svc.SaveOpeningMessage(context.Background(), id2, "你好"); err == nil {
+		t.Fatal("落库失败应上抛")
+	}
 }

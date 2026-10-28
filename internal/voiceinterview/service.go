@@ -40,6 +40,10 @@ type SessionStore interface {
 	UpdateEvaluateStatus(ctx context.Context, sessionID int64, status VoiceEvaluateStatus, evalErr *string) error
 	ListByUser(ctx context.Context, userID string, status *VoiceSessionStatus) ([]SessionEntity, error)
 	CountDialogueMessages(ctx context.Context, sessionID int64) (int64, error)
+	// InsertMessage 插入一条消息行（开场白与回合管道共用，对齐 Java
+	// messageRepository.save；created_at/timestamp 为空时由 Repo 补当前时间，
+	// 对齐实体 @PrePersist）。
+	InsertMessage(ctx context.Context, m *MessageEntity) error
 	DeleteSessionCascade(ctx context.Context, sessionID int64) error
 	FindDialogueMessages(ctx context.Context, sessionID int64) ([]MessageEntity, error)
 	// 票 08 评估恢复巡检。
@@ -463,8 +467,9 @@ func (s *Service) GetConversationHistoryDTO(ctx context.Context, sessionID int64
 
 // ===== 阶段切换（WS start_phase 的会话服务入口，票 04 消费）=====
 
-// StartPhase 切换当前阶段：非法阶段仅记日志不改状态（对齐 Java startPhase L219-221
-// 捕获 valueOf 异常只 log）；会话不存在仅告警。
+// StartPhase 切换当前阶段：仅接受 INTRO/TECH/PROJECT/HR 四个合法值（票面验收；
+// COMPLETED 不是可主动开始的阶段），非法值仅记日志不改状态（对齐 Java startPhase
+// L219-221 捕获 valueOf 异常只 log）；会话不存在仅告警。
 func (s *Service) StartPhase(ctx context.Context, sessionID int64, phase string) error {
 	e, err := s.getSession(ctx, sessionID)
 	if err != nil {
@@ -474,7 +479,7 @@ func (s *Service) StartPhase(ctx context.Context, sessionID int64, phase string)
 		s.logger.Warn("切换阶段未找到会话，跳过", slog.Int64("sessionId", sessionID))
 		return nil
 	}
-	p, ok := parsePhase(strings.ToUpper(phase))
+	p, ok := parseStartPhase(strings.ToUpper(phase))
 	if !ok {
 		s.logger.Error("非法阶段字符串，忽略", slog.Int64("sessionId", sessionID), slog.String("phase", phase))
 		return nil
@@ -489,6 +494,61 @@ func (s *Service) StartPhase(ctx context.Context, sessionID int64, phase string)
 	s.logger.Info("语音面试会话已切换阶段",
 		slog.Int64("sessionId", sessionID),
 		slog.String("from", old), slog.String("to", string(p)))
+	return nil
+}
+
+// ===== 开场白（票 05，Java Handler triggerOpeningQuestionIfNeeded 的会话域支点）=====
+
+// hasConversationHistory 是否已有对话历史（对齐 Java triggerOpeningQuestionIfNeeded
+// L231-235：getHistory 非空即已有历史对话，重连/恢复不重复开场；getHistory 捕获
+// 异常返回空表，故查询失败按无历史处理继续开场）。票 07 上下文压缩落地后由真实
+// 历史加载器替代计数实现（空会话语义相同）。
+func (s *Service) hasConversationHistory(ctx context.Context, sessionID int64) bool {
+	n, err := s.repo.CountDialogueMessages(ctx, sessionID)
+	if err != nil {
+		s.logger.Warn("统计语音面试对话消息失败，按无历史处理",
+			slog.Int64("sessionId", sessionID), slog.String("error", err.Error()))
+		return false
+	}
+	return n > 0
+}
+
+// SaveOpeningMessage 开场消息落库（Java saveMessage(sessionId, null, aiReply)
+// L276-296 的开场路径）：DIALOGUE 行，phase 取会话当前阶段，sequenceNum =
+// 非 SUMMARY 消息数 + 1（Java getNextSequenceNum L627-631），userRecognizedText
+// 恒空（开场无用户话语）。回答回填分支（fillLatestUnansweredQuestion L296-308）
+// 随票 06 回合管道补齐。会话不存在仅告警返回 nil、空白文案跳过（对齐 Java 原文）。
+func (s *Service) SaveOpeningMessage(ctx context.Context, sessionID int64, aiText string) error {
+	e, err := s.getSession(ctx, sessionID)
+	if err != nil {
+		return apperr.Wrap(apperr.CodeInternalError, "查询语音面试会话失败", err)
+	}
+	if e == nil {
+		s.logger.Warn("保存消息未找到会话，跳过", slog.Int64("sessionId", sessionID))
+		return nil
+	}
+	ai := strings.TrimSpace(aiText) // Java VoiceInterviewMessageEntity.trimToNull
+	if ai == "" {
+		return nil
+	}
+	count, err := s.repo.CountDialogueMessages(ctx, sessionID)
+	if err != nil {
+		return apperr.Wrap(apperr.CodeInternalError, "统计语音面试消息数失败", err)
+	}
+	seq := int(count) + 1
+	msg := &MessageEntity{
+		SessionID:       sessionID,
+		MessageType:     MessageDialogue,
+		Phase:           e.CurrentPhase,
+		AiGeneratedText: &ai,
+		SequenceNum:     &seq,
+	}
+	if err := s.repo.InsertMessage(ctx, msg); err != nil {
+		return apperr.Wrap(apperr.CodeInternalError, "保存语音面试消息失败", err)
+	}
+	s.logger.Debug("已保存语音面试开场消息",
+		slog.Int64("sessionId", sessionID),
+		slog.String("phase", phaseValue(e.CurrentPhase)), slog.Int("sequence", seq))
 	return nil
 }
 
@@ -814,6 +874,14 @@ func phaseValue(p *VoicePhase) string {
 	return string(*p)
 }
 
+// skillValue 方向 ID 读取（nil → 空串，Java getSkillId() != null ? … : ""）。
+func skillValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func phaseNamePtr(p *VoicePhase) *string {
 	if p == nil {
 		return nil
@@ -840,10 +908,12 @@ func parseSessionStatus(s string) (VoiceSessionStatus, bool) {
 	}
 }
 
-// parsePhase 阶段字符串解析（WS start_phase 与 REST 路径共用）。
-func parsePhase(s string) (VoicePhase, bool) {
+// parseStartPhase start_phase 合法值解析（大小写归一由调用方完成）：仅接受
+// INTRO/TECH/PROJECT/HR 四个可主动开始的阶段（票面验收；COMPLETED 非可开始阶段，
+// 借道 start_phase 收尾应走 end_interview）。
+func parseStartPhase(s string) (VoicePhase, bool) {
 	switch VoicePhase(s) {
-	case PhaseIntro, PhaseTech, PhaseProject, PhaseHR, PhaseCompleted:
+	case PhaseIntro, PhaseTech, PhaseProject, PhaseHR:
 		return VoicePhase(s), true
 	default:
 		return "", false

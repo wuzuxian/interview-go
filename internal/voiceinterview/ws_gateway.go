@@ -85,6 +85,9 @@ type Gateway struct {
 	origins  []string
 	turn     TurnHook
 	logger   *slog.Logger
+	tts      *TtsClient // 开场白音频合成（Java Handler 的 ttsService 单例同构）
+
+	openingCache *openingAudioCache // 开场音频缓存（Java openingAudioCache 同构）
 
 	mu   sync.Mutex
 	live map[string]*wsSession // 会话键（路径段）→ 当前连接；会话间隔离
@@ -96,13 +99,15 @@ func NewGateway(deps GatewayDeps) *Gateway {
 		deps.Logger = slog.Default()
 	}
 	return &Gateway{
-		svc:      deps.Service,
-		settings: deps.Settings,
-		cfg:      deps.Config,
-		origins:  deps.AllowedOrigins,
-		turn:     deps.Turn,
-		logger:   deps.Logger,
-		live:     make(map[string]*wsSession),
+		svc:          deps.Service,
+		settings:     deps.Settings,
+		cfg:          deps.Config,
+		origins:      deps.AllowedOrigins,
+		turn:         deps.Turn,
+		logger:       deps.Logger,
+		tts:          NewTtsClient(deps.Config, deps.Logger),
+		openingCache: newOpeningAudioCache(),
+		live:         make(map[string]*wsSession),
 	}
 }
 
@@ -215,9 +220,128 @@ func (g *Gateway) establish(conn *websocket.Conn, key string, sessionID int64) {
 	if s.asr != nil {
 		// welcome 在 ASR 启动之后下发（Java 同序）；asr_ready 由就绪回调异步下发。
 		s.sendJSON(buildWelcome())
+		// 自动开场（Java triggerOpeningQuestionIfNeeded L174：welcome 后异步触发，
+		// 仅无历史消息的会话生效）。文本先于音频由同一协程顺序保证。
+		go s.triggerOpeningQuestion()
 	}
 
 	g.readPump(s)
+}
+
+// triggerOpeningQuestion 建连自动开场（Java triggerOpeningQuestionIfNeeded
+// L218-261 逐字，运行在独立协程）：无历史消息的会话按方向取开场文案 → 先落库
+// （DIALOGUE、当前阶段、序号）→ 推 text(final=true) → TTS 合成音频下发（缓存命中
+// 不重复合成）。任一前置不满足（连接已关/会话缺失/已有历史/文案为空）静默返回；
+// 异常仅记日志不中断连接（Java catch log.error）。
+func (s *wsSession) triggerOpeningQuestion() {
+	defer func() {
+		if r := recover(); r != nil {
+			s.gw.logger.Error("发送开场白异常",
+				slog.Int64("sessionId", s.id), slog.Any("panic", r))
+		}
+	}()
+
+	if !s.alive() {
+		return
+	}
+	ctx := context.Background()
+	entity, err := s.gw.svc.GetSessionEntity(ctx, s.id)
+	if err != nil {
+		s.gw.logger.Warn("开场白查询会话实体失败",
+			slog.Int64("sessionId", s.id), slog.String("error", err.Error()))
+		return
+	}
+	if entity == nil {
+		s.gw.logger.Warn("发送开场白时未找到会话实体，跳过", slog.Int64("sessionId", s.id))
+		return
+	}
+	if s.gw.svc.hasConversationHistory(ctx, s.id) {
+		// 已有历史对话（如重连/恢复），不重复开场（Java L232-235）。
+		return
+	}
+
+	aiReply := buildOpeningQuestion(skillValue(entity.SkillID), embeddedOpeningConfig())
+	if isBlank(aiReply) {
+		return
+	}
+	if !s.alive() {
+		return
+	}
+
+	// 先落库再推前端，确保用户提交时 DB 中已有该条消息（Java L246-248 注释原意）。
+	if err := s.gw.svc.SaveOpeningMessage(ctx, s.id, aiReply); err != nil {
+		s.gw.logger.Error("发送开场白失败",
+			slog.Int64("sessionId", s.id), slog.String("error", err.Error()))
+		return
+	}
+	s.SendText(aiReply, true)
+
+	// 语音随后下发（Java L250-254）：合成失败或空结果跳过，文本不回撤。
+	if wav := s.gw.getOpeningWavAudio(ctx, aiReply); len(wav) > 0 && s.alive() {
+		s.SendAudio(wav, aiReply)
+	}
+	s.gw.logger.Info("开场白已发送", slog.Int64("sessionId", s.id))
+}
+
+// getOpeningWavAudio 开场音频（Java getOpeningWavAudio L263-281 + synthesizeToWav
+// L275-281）：缓存命中直接返回；未命中按最新语音配置合成 PCM → 包 WAV 头 → 回填
+// 缓存。合成失败或空结果返回 nil（不缓存，下次建连重试）。
+func (g *Gateway) getOpeningWavAudio(ctx context.Context, text string) []byte {
+	if cached := g.openingCache.get(text); len(cached) > 0 {
+		return cached
+	}
+	settings, err := g.settings.VoiceTtsSettings(ctx)
+	if err != nil {
+		g.logger.Warn("读取语音合成配置失败，跳过开场音频",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	pcm, err := g.tts.Synthesize(ctx, settings, text)
+	if err != nil {
+		g.logger.Warn("开场白语音合成失败，跳过音频下发",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if len(pcm) == 0 {
+		return nil
+	}
+	wav := PcmToWav(pcm)
+	g.openingCache.put(text, wav)
+	return wav
+}
+
+// WarmupOpeningAudio 开场音频缓存预热（Java @PostConstruct warmupOpeningAudioCache
+// L111-137）：开关关闭（默认）仅记日志不产生云端调用；开启时对全部去重后的开场
+// 文案逐条合成回填缓存。Java 在独立线程池异步执行，Go 由调用方决定是否入协程。
+func (g *Gateway) WarmupOpeningAudio(ctx context.Context) {
+	if !g.cfg.OpeningAudioWarmupEnabled {
+		g.logger.Info("开场音频缓存预热已关闭")
+		return
+	}
+	opening := embeddedOpeningConfig()
+	seen := make(map[string]struct{})
+	texts := make([]string, 0, len(opening.SkillQuestions)+2)
+	for _, text := range opening.SkillQuestions {
+		if _, ok := seen[text]; !ok {
+			seen[text] = struct{}{}
+			texts = append(texts, text)
+		}
+	}
+	for _, text := range []string{opening.AlgorithmQuestion, opening.BackendQuestion} {
+		if _, ok := seen[text]; !ok {
+			seen[text] = struct{}{}
+			texts = append(texts, text)
+		}
+	}
+	for _, text := range texts {
+		if isBlank(text) {
+			continue
+		}
+		if wav := g.getOpeningWavAudio(ctx, text); len(wav) > 0 {
+			g.openingCache.put(text, wav)
+		}
+	}
+	g.logger.Info("开场音频缓存预热完成", slog.Int("entries", g.openingCache.size()))
 }
 
 // readPump 上行读循环（Java 容器回调 handleTextMessage 的驱动源）。
