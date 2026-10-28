@@ -23,7 +23,11 @@ type AsrSettings struct {
 }
 
 // TtsSettings 语音合成运行时配置（同上；与 ASR 共享同一把 APIKey）。
+// URL 为 DashScope 实时 TTS 建连地址（如 wss://dashscope.aliyuncs.com/api-ws/v1/realtime）。
+// Java 侧 TTS 无 URL 配置项（SDK 内置默认端点）；Go 显式纳入配置是为了
+// 热切换端点与契约测试打进程内假服务端（spec 实现决策 19：客户端不设接口接缝）。
 type TtsSettings struct {
+	URL          string
 	Model        string
 	APIKey       string
 	Voice        string
