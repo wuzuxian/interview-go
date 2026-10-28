@@ -156,15 +156,77 @@ func (r *Repo) DeleteSessionCascade(ctx context.Context, sessionID int64) error 
 	})
 }
 
-// truncateVoiceError evaluate_error 截断 500（按字符，对齐 Java substring 语义）。
+// ===== 评估链路（票 08）=====
+
+// FindEvaluationBySessionID 按场次读评估行（session_id UNIQUE）；
+// 不存在返回 ErrEvaluationNotFound。
+func (r *Repo) FindEvaluationBySessionID(ctx context.Context, sessionID int64) (*EvaluationEntity, error) {
+	var e EvaluationEntity
+	err := r.db.WithContext(ctx).Where("session_id = ?", sessionID).First(&e).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrEvaluationNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// SaveEvaluation 评估报告落库（Java saveEvaluationTransactional 的 repository.save：
+// 新实体恒 INSERT；session_id 冲突由 UNIQUE 约束报错并走消费侧重试路径，与 Java 一致）。
+func (r *Repo) SaveEvaluation(ctx context.Context, e *EvaluationEntity) error {
+	return r.db.WithContext(ctx).Create(e).Error
+}
+
+// SaveEmptyEvaluation 占位空评估（Java saveEmptyEvaluationTransactional）：
+// 按场次找既有行——存在则整体更新评估列，否则插入新行。
+func (r *Repo) SaveEmptyEvaluation(ctx context.Context, e *EvaluationEntity) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing EvaluationEntity
+		err := tx.Where("session_id = ?", *e.SessionID).First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(e).Error
+		}
+		if err != nil {
+			return err
+		}
+		return tx.Model(&EvaluationEntity{}).Where("id = ?", existing.ID).Updates(map[string]any{
+			"overall_score":             e.OverallScore,
+			"overall_feedback":          e.OverallFeedback,
+			"question_evaluations_json": e.QuestionEvaluationsJSON,
+			"strengths_json":            e.StrengthsJSON,
+			"improvements_json":         e.ImprovementsJSON,
+			"reference_answers_json":    e.ReferenceAnswersJSON,
+			"interviewer_role":          e.InterviewerRole,
+			"interview_date":            e.InterviewDate,
+		}).Error
+	})
+}
+
+// FindStaleEvaluateSessions 按评估状态与 updated_at 截止时间查滞留场次
+// （对齐 Java findByEvaluateStatusAndUpdatedAtBefore）。
+func (r *Repo) FindStaleEvaluateSessions(ctx context.Context, status VoiceEvaluateStatus, before time.Time) ([]SessionEntity, error) {
+	var list []SessionEntity
+	err := r.db.WithContext(ctx).
+		Where("evaluate_status = ? AND updated_at < ?", status, before).
+		Find(&list).Error
+	return list, err
+}
+
+// UpdateEvaluateRequeue 滞留 PENDING 补投前置（Java cleanupStaleSessions L759-768）：
+// evaluate_error 清空 + updated_at 推进到巡检时钟（GORM 自动填充同为 updated_at）。
+func (r *Repo) UpdateEvaluateRequeue(ctx context.Context, sessionID int64, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]any{"evaluate_error": nil, "updated_at": at}).Error
+}
+
+// truncateVoiceError evaluate_error 截断 500（指针版：nil 原样清空列；按字符截断，
+// 对齐 Java substring 语义，实现见 evaluation.go 的 truncateVoiceErrMsg）。
 func truncateVoiceError(s *string) *string {
 	if s == nil {
 		return nil
 	}
-	runes := []rune(*s)
-	if len(runes) > 500 {
-		t := string(runes[:500])
-		return &t
-	}
-	return s
+	t := truncateVoiceErrMsg(*s)
+	return &t
 }

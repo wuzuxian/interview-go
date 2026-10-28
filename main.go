@@ -246,17 +246,36 @@ func main() {
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
-	// 语音面试模块（票 01：会话域 + REST 契约；评估流仅入队，消费侧属票 08；
-	// WS 网关/管道随票 04-07 接入）。repo + Redis 会话缓存 + 评估流入队接缝。
+	// 语音面试模块（票 01：会话域 + REST 契约；票 08：评估链路——评估服务复用
+	// 文字面试的 evalRunner（app.interview.evaluation 引擎配置与降级接缝共用）与
+	// interviewSvc 的方向评估参考段。repo + Redis 会话缓存 + 评估流读写。
+	// WS 网关/管道随票 04-07 接入）。
 	voiceRepo := voiceinterview.NewRepo(db.DB)
 	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
 	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
-	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
-		Repo:   voiceRepo,
-		Cache:  voiceCache,
-		Stream: voiceStream,
+	voiceEvalSvc := voiceinterview.NewEvaluationService(voiceinterview.EvaluationServiceDeps{
+		Store:  voiceRepo,
+		Eval:   evalRunner,
+		Refs:   interviewSvc,
 		Logger: slogger,
 	})
+	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
+		Repo:       voiceRepo,
+		Cache:      voiceCache,
+		Stream:     voiceStream,
+		Logger:     slogger,
+		EvalDetail: voiceEvalSvc,
+		Recovery: voiceinterview.EvalRecoveryParams{
+			PendingRequeueAfter: appCfg.VoiceInterview.EvaluatePendingRequeueAfter,
+			ProcessingFailAfter: appCfg.VoiceInterview.EvaluateProcessingFailAfter,
+		},
+	})
+	voiceEvalConsumer := voiceinterview.NewVoiceEvaluateConsumer(voiceStream, voiceRepo, voiceEvalSvc, slogger)
+	voiceEvalConsumer.Start(ctx)
+	defer voiceEvalConsumer.Stop()
+	voiceEvalRecovery := voiceinterview.NewEvalRecoveryScheduler(voiceSvc, appCfg.VoiceInterview.CleanupInterval, slogger)
+	voiceEvalRecovery.Start(ctx)
+	defer voiceEvalRecovery.Stop()
 	voiceCtl := voiceinterview.NewController(voiceSvc)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。

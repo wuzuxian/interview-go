@@ -80,3 +80,31 @@ func TestVoiceInterviewMessageDTOContract(t *testing.T) {
 		"aiGeneratedText", "timestamp", "sequenceNum",
 	))
 }
+
+// TestVoiceEvaluationStatusDTOContract 对应 Java dto/VoiceEvaluationStatusDTO.java 的四字段
+// （票 08：GET/POST evaluation 的响应体外层）。
+func TestVoiceEvaluationStatusDTOContract(t *testing.T) {
+	got := jsonKeys(t, VoiceEvaluationStatusDTO{})
+	assertKeys(t, got, sortedKeys(
+		"evaluateStatus", "evaluateError", "evaluateStatusUpdatedAt", "evaluation",
+	))
+}
+
+// TestVoiceEvaluationDetailDTOContract 对应 Java dto/VoiceEvaluationDetailDTO.java 的七字段
+// （与文字面试明细 InterviewDetailDTO 对齐供前端复用面板，票面验收项 2）。
+func TestVoiceEvaluationDetailDTOContract(t *testing.T) {
+	got := jsonKeys(t, VoiceEvaluationDetailDTO{})
+	assertKeys(t, got, sortedKeys(
+		"sessionId", "totalQuestions", "overallScore", "overallFeedback",
+		"strengths", "improvements", "answers",
+	))
+}
+
+// TestVoiceAnswerDetailDTOContract 对应 Java VoiceEvaluationDetailDTO.AnswerDetail 的八字段。
+func TestVoiceAnswerDetailDTOContract(t *testing.T) {
+	got := jsonKeys(t, VoiceAnswerDetailDTO{})
+	assertKeys(t, got, sortedKeys(
+		"questionIndex", "question", "category", "userAnswer",
+		"score", "feedback", "referenceAnswer", "keyPoints",
+	))
+}

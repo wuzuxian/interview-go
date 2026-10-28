@@ -42,6 +42,22 @@ type SessionStore interface {
 	CountDialogueMessages(ctx context.Context, sessionID int64) (int64, error)
 	DeleteSessionCascade(ctx context.Context, sessionID int64) error
 	FindDialogueMessages(ctx context.Context, sessionID int64) ([]MessageEntity, error)
+	// 票 08 评估恢复巡检。
+	FindStaleEvaluateSessions(ctx context.Context, status VoiceEvaluateStatus, before time.Time) ([]SessionEntity, error)
+	UpdateEvaluateRequeue(ctx context.Context, sessionID int64, at time.Time) error
+}
+
+// EvaluationDetailSource 评估明细读取接缝（GET/POST evaluation 的 COMPLETED 分支，
+// 生产实现 *EvaluationService，测试注入 stub）。
+type EvaluationDetailSource interface {
+	GetEvaluationDetail(ctx context.Context, sessionID int64) (*VoiceEvaluationDetailDTO, error)
+}
+
+// EvalRecoveryParams 评估恢复巡检阈值（对齐 Java PENDING_EVALUATION_REQUEUE_DELAY=3min、
+// PROCESSING_EVALUATION_TIMEOUT=30min；零值时由 NewService 补默认）。
+type EvalRecoveryParams struct {
+	PendingRequeueAfter time.Duration
+	ProcessingFailAfter time.Duration
 }
 
 // Service 会话域服务。
@@ -50,6 +66,9 @@ type Service struct {
 	cache  SessionCacheStore
 	stream VoiceEvalStream // 评估流入队接缝；nil 时不投递（早期票/测试）
 	logger *slog.Logger
+
+	evalDetail EvaluationDetailSource
+	recovery   EvalRecoveryParams
 }
 
 // ServiceDeps 服务依赖聚合。
@@ -58,11 +77,24 @@ type ServiceDeps struct {
 	Cache  SessionCacheStore
 	Stream VoiceEvalStream
 	Logger *slog.Logger
+
+	// EvalDetail 评估明细读取（票 08 GET/POST evaluation）；nil 时 COMPLETED 分支
+	// 不可用（构建期应注入 *EvaluationService）。
+	EvalDetail EvaluationDetailSource
+	// Recovery 评估恢复巡检阈值；零值补 Java 默认。
+	Recovery EvalRecoveryParams
 }
 
 // NewService 创建会话域服务。
 func NewService(deps ServiceDeps) *Service {
-	return &Service{repo: deps.Repo, cache: deps.Cache, stream: deps.Stream, logger: deps.Logger}
+	if deps.Recovery.PendingRequeueAfter <= 0 {
+		deps.Recovery.PendingRequeueAfter = 3 * time.Minute
+	}
+	if deps.Recovery.ProcessingFailAfter <= 0 {
+		deps.Recovery.ProcessingFailAfter = 30 * time.Minute
+	}
+	return &Service{repo: deps.Repo, cache: deps.Cache, stream: deps.Stream, logger: deps.Logger,
+		evalDetail: deps.EvalDetail, recovery: deps.Recovery}
 }
 
 // ===== 创建 =====
@@ -491,6 +523,13 @@ func determineFirstPhase(intro, tech, project, hr bool) VoicePhase {
 
 // ===== 评估入队（事务提交后）=====
 
+// TriggerEvaluation 显式重试入口（POST evaluation 的否则分支，Java triggerEvaluation
+// L657-661）：先置 evaluate_status=PENDING（清空 evaluate_error）再投递评估流。
+func (s *Service) TriggerEvaluation(ctx context.Context, sessionID int64) {
+	s.UpdateEvaluateStatus(ctx, sessionID, VoiceEvaluatePending, nil)
+	s.sendEvaluateTaskAfterCommit(ctx, sessionID)
+}
+
 // sendEvaluateTaskAfterCommit 评估流投递：仅在落库事务提交成功后调用（gorm
 // Transaction 返回 nil 即已提交），对齐 Java TransactionSynchronization.afterCommit。
 // XADD 失败不向调用方报错，改为置评估 FAILED + "任务入队失败"（对齐 Java
@@ -559,6 +598,133 @@ func buildSessionResponse(e *SessionEntity) *SessionResponseDTO {
 		PlannedDuration: e.PlannedDuration,
 		WebSocketURL:    fmt.Sprintf("/ws/voice-interview/%d", e.ID),
 	}
+}
+
+// ===== 评估状态接口（票 08，Java VoiceInterviewController L156-222 逐字）=====
+
+// GetEvaluationStatus GET /sessions/{id}/evaluation：三分支——COMPLETED 内嵌报告、
+// 其余原样返回状态（evaluateStatus/evaluateError/evaluateStatusUpdatedAt）。
+// 会话不存在 → 10001 "会话不存在: {id}"；COMPLETED 但评估行缺失 → 10006 上抛。
+func (s *Service) GetEvaluationStatus(ctx context.Context, sessionID int64) (*VoiceEvaluationStatusDTO, error) {
+	e, err := s.getSession(ctx, sessionID)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternalError, "查询语音面试会话失败", err)
+	}
+	if e == nil {
+		return nil, apperr.VoiceSessionNotFoundWithMessage("会话不存在: " + strconv.FormatInt(sessionID, 10))
+	}
+	dto := &VoiceEvaluationStatusDTO{
+		EvaluateStatus:          evalStringPtr(e.EvaluateStatus),
+		EvaluateError:           e.EvaluateError,
+		EvaluateStatusUpdatedAt: e.UpdatedAt,
+	}
+	if e.EvaluateStatus != nil && *e.EvaluateStatus == VoiceEvaluateCompleted {
+		detail, err := s.evaluationDetail(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		dto.Evaluation = detail
+	}
+	return dto, nil
+}
+
+// RetryEvaluation POST /sessions/{id}/evaluation：三分支——COMPLETED 返回缓存、
+// PROCESSING 原样（保留当前 worker）、否则显式重试（置 PENDING 入队）并返回 PENDING
+// + 当前时间（Java generateEvaluation L188-222）。
+func (s *Service) RetryEvaluation(ctx context.Context, sessionID int64) (*VoiceEvaluationStatusDTO, error) {
+	e, err := s.getSession(ctx, sessionID)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternalError, "查询语音面试会话失败", err)
+	}
+	if e == nil {
+		return nil, apperr.VoiceSessionNotFoundWithMessage("会话不存在: " + strconv.FormatInt(sessionID, 10))
+	}
+
+	// 已完成：返回缓存结果。
+	if e.EvaluateStatus != nil && *e.EvaluateStatus == VoiceEvaluateCompleted {
+		detail, err := s.evaluationDetail(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		return &VoiceEvaluationStatusDTO{
+			EvaluateStatus:          stringPtr(string(VoiceEvaluateCompleted)),
+			EvaluateStatusUpdatedAt: e.UpdatedAt,
+			Evaluation:              detail,
+		}, nil
+	}
+
+	// 处理中：保留当前 worker，原样返回。
+	if e.EvaluateStatus != nil && *e.EvaluateStatus == VoiceEvaluateProcess {
+		return &VoiceEvaluationStatusDTO{
+			EvaluateStatus:          stringPtr(string(VoiceEvaluateProcess)),
+			EvaluateStatusUpdatedAt: e.UpdatedAt,
+		}, nil
+	}
+
+	// 其余（PENDING/FAILED/null）：显式重试。
+	s.TriggerEvaluation(ctx, sessionID)
+	now := time.Now()
+	return &VoiceEvaluationStatusDTO{
+		EvaluateStatus:          stringPtr(string(VoiceEvaluatePending)),
+		EvaluateStatusUpdatedAt: &now,
+	}, nil
+}
+
+// evaluationDetail COMPLETED 分支的明细读取（Java evaluationService.getEvaluation）。
+func (s *Service) evaluationDetail(ctx context.Context, sessionID int64) (*VoiceEvaluationDetailDTO, error) {
+	if s.evalDetail == nil {
+		return nil, apperr.New(apperr.CodeVoiceEvaluationNotFound,
+			"评估结果不存在: "+strconv.FormatInt(sessionID, 10))
+	}
+	return s.evalDetail.GetEvaluationDetail(ctx, sessionID)
+}
+
+// ===== 评估恢复巡检（票 08，Java cleanupStaleSessions L738-785 的评估段）=====
+
+// RecoverStaleEvaluations 按 DB 状态时间戳巡检（时钟经 now 注入便于测试）：
+// PENDING 超 PendingRequeueAfter 补投（清空 evaluate_error、推进 updated_at 后 XADD），
+// PROCESSING 超 ProcessingFailAfter 置 FAILED + "评估超时，请重新触发"。
+// 返回清理条数。IN_PROGRESS 超 2h 的强制结束属票 09 的僵尸清理段。
+func (s *Service) RecoverStaleEvaluations(ctx context.Context, now time.Time) (int, error) {
+	cleaned := 0
+
+	// 滞留 PENDING 补投（Java L754-768）。
+	pendingBefore := now.Add(-s.recovery.PendingRequeueAfter)
+	pendings, err := s.repo.FindStaleEvaluateSessions(ctx, VoiceEvaluatePending, pendingBefore)
+	if err != nil {
+		return cleaned, apperr.Wrap(apperr.CodeInternalError, "查询滞留 PENDING 评估失败", err)
+	}
+	for _, e := range pendings {
+		s.logger.Warn("补投滞留 PENDING 评估",
+			slog.Int64("sessionId", e.ID), slog.Time("updatedAt", timeValue(e.UpdatedAt)))
+		if err := s.repo.UpdateEvaluateRequeue(ctx, e.ID, now); err != nil {
+			return cleaned, apperr.Wrap(apperr.CodeInternalError, "补投滞留 PENDING 评估失败", err)
+		}
+		s.invalidateSessionCache(ctx, e.ID)
+		s.sendEvaluateTaskAfterCommit(ctx, e.ID)
+		cleaned++
+	}
+
+	// 卡死 PROCESSING 置败（Java L770-782，文案逐字）。
+	processingBefore := now.Add(-s.recovery.ProcessingFailAfter)
+	processings, err := s.repo.FindStaleEvaluateSessions(ctx, VoiceEvaluateProcess, processingBefore)
+	if err != nil {
+		return cleaned, apperr.Wrap(apperr.CodeInternalError, "查询卡死 PROCESSING 评估失败", err)
+	}
+	for _, e := range processings {
+		s.logger.Info("重置卡死的 PROCESSING 评估", slog.Int64("sessionId", e.ID))
+		s.UpdateEvaluateStatus(ctx, e.ID, VoiceEvaluateFailed, stringPtr("评估超时，请重新触发"))
+		cleaned++
+	}
+	return cleaned, nil
+}
+
+// timeValue 指针解引用（nil → 零值时间）。
+func timeValue(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
 }
 
 // ===== 小工具 =====

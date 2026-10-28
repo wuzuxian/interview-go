@@ -64,3 +64,40 @@ type VoiceInterviewMessageDTO struct {
 	Timestamp          *time.Time `json:"timestamp"`
 	SequenceNum        *int       `json:"sequenceNum"`
 }
+
+// VoiceEvaluationStatusDTO GET/POST /sessions/{id}/evaluation 响应体，对应 Java
+// dto/VoiceEvaluationStatusDTO：评估状态 + 失败原因 + 状态时间 + 完成时的完整报告。
+// Java builder 未赋值的字段序列化为 null，Go 用指针 nil 表达（包装类型可空语义）。
+type VoiceEvaluationStatusDTO struct {
+	EvaluateStatus          *string                   `json:"evaluateStatus"`
+	EvaluateError           *string                   `json:"evaluateError"`
+	EvaluateStatusUpdatedAt *time.Time                `json:"evaluateStatusUpdatedAt"`
+	Evaluation              *VoiceEvaluationDetailDTO `json:"evaluation"`
+}
+
+// VoiceEvaluationDetailDTO 评估报告明细，对应 Java dto/VoiceEvaluationDetailDTO
+// （注释原文：aligned with text-based interview InterviewDetailDTO，前端复用同一报告面板）。
+// 字段名与文字面试明细逐字对齐；sessionId 为语音场次自增主键（Java Long）。
+type VoiceEvaluationDetailDTO struct {
+	SessionID       int64                  `json:"sessionId"`
+	TotalQuestions  int                    `json:"totalQuestions"`
+	OverallScore    *int                   `json:"overallScore"`
+	OverallFeedback *string                `json:"overallFeedback"`
+	Strengths       []string               `json:"strengths"`
+	Improvements    []string               `json:"improvements"`
+	Answers         []VoiceAnswerDetailDTO `json:"answers"`
+}
+
+// VoiceAnswerDetailDTO 明细中的单题，对应 Java VoiceEvaluationDetailDTO.AnswerDetail：
+// questionIndex/score 为 Java 原生 int 恒输出；userAnswer 未答为 null；
+// referenceAnswer/keyPoints 仅在参考答案列表命中该题时非空（Java ref != null 判定）。
+type VoiceAnswerDetailDTO struct {
+	QuestionIndex   int      `json:"questionIndex"`
+	Question        string   `json:"question"`
+	Category        string   `json:"category"`
+	UserAnswer      *string  `json:"userAnswer"`
+	Score           int      `json:"score"`
+	Feedback        string   `json:"feedback"`
+	ReferenceAnswer *string  `json:"referenceAnswer"`
+	KeyPoints       []string `json:"keyPoints"`
+}
