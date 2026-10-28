@@ -123,7 +123,8 @@ func (s *sessionState) markSttActivity() {
 	s.lastSttActivity = time.Now()
 }
 
-// lastSttActivityAt 最近 STT 活动时刻（Java getLastSttActivityAt，票 09 巡检消费）。
+// lastSttActivityAt 最近 STT 活动时刻（Java getLastSttActivityAt；票 09 的暂停
+// 超时巡检改用任意上行消息的 lastActivityTime，见 ws_gateway.go touchActivity）。
 func (s *sessionState) lastSttActivityAt() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1,7 +1,9 @@
-// 评估恢复巡检调度器（票 08）：按固定间隔调用 Service.RecoverStaleEvaluations，
+// 评估恢复与僵尸清理巡检调度器（票 08 建，票 09 并入僵尸段）：按固定间隔调用
+// Service.EndStaleInProgressSessions（IN_PROGRESS 超 2h 强制结束 + 评估投递）与
+// Service.RecoverStaleEvaluations（PENDING 超 3min 补投、PROCESSING 超 30min 置败），
 // 对齐 Java WebSocketHandler 内 @Scheduled(fixedDelay = 60_000) 触发 cleanupStaleSessions
-// 的评估恢复段（L1153-1163）。巡检逻辑本身在 service.go（DB 状态时间戳 + 注入时钟），
-// 本文件只负责起停节拍；IN_PROGRESS 超 2h 的僵尸清理段属票 09，届时并入同一调度。
+// （L1153-1163）。巡检逻辑本身在 service.go（DB 状态时间戳 + 注入时钟），
+// 本文件只负责起停节拍。
 package voiceinterview
 
 import (
@@ -64,7 +66,19 @@ func (r *EvalRecoveryScheduler) Stop() {
 }
 
 func (r *EvalRecoveryScheduler) sweepOnce(ctx context.Context) {
-	cleaned, err := r.svc.RecoverStaleEvaluations(ctx, time.Now())
+	now := time.Now()
+
+	// 票 09 僵尸段：IN_PROGRESS 超 2h 强制结束 + 评估投递（Java cleanupStaleSessions
+	// 第一段，与评估恢复共用 60s 节拍）。失败记日志后继续评估段（两段相互独立）。
+	ended, err := r.svc.EndStaleInProgressSessions(ctx, now)
+	if err != nil {
+		r.logger.Error("语音僵尸会话清理失败", slog.String("error", err.Error()))
+	}
+	if ended > 0 {
+		r.logger.Info("语音僵尸会话清理完成", slog.Int("cleaned", ended))
+	}
+
+	cleaned, err := r.svc.RecoverStaleEvaluations(ctx, now)
 	if err != nil {
 		r.logger.Error("语音评估恢复巡检失败", slog.String("error", err.Error()))
 		return

@@ -250,7 +250,10 @@ func main() {
 	// 配置，设置页修改热生效；模型回合挂钩留空，内置空实现，票 06 接入真实 LLM+TTS
 	// 管道。票 08：评估链路——评估服务复用文字面试的 evalRunner
 	// （app.interview.evaluation 引擎配置与降级接缝共用）与 interviewSvc 的方向评估
-	// 参考段；repo + Redis 会话缓存 + 评估流读写 + 消费侧与恢复调度已接入）。
+	// 参考段；repo + Redis 会话缓存 + 评估流读写 + 消费侧与恢复调度已接入。
+	// 票 09：暂停超时巡检（30s，4:30 预警/5:00 暂停断连）与僵尸清理
+	// （并入 60s 恢复调度器，IN_PROGRESS 超 2h 强制结束）已接入；优雅关闭时
+	// voiceGateway.Close() 关闭全部活动连接，走断开自动结束路径）。
 	voiceRepo := voiceinterview.NewRepo(db.DB)
 	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
 	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
@@ -267,8 +270,9 @@ func main() {
 		Logger:     slogger,
 		EvalDetail: voiceEvalSvc,
 		Recovery: voiceinterview.EvalRecoveryParams{
-			PendingRequeueAfter: appCfg.VoiceInterview.EvaluatePendingRequeueAfter,
-			ProcessingFailAfter: appCfg.VoiceInterview.EvaluateProcessingFailAfter,
+			PendingRequeueAfter:  appCfg.VoiceInterview.EvaluatePendingRequeueAfter,
+			ProcessingFailAfter:  appCfg.VoiceInterview.EvaluateProcessingFailAfter,
+			StaleInProgressAfter: appCfg.VoiceInterview.StaleInProgressAfter,
 		},
 	})
 	voiceEvalConsumer := voiceinterview.NewVoiceEvaluateConsumer(voiceStream, voiceRepo, voiceEvalSvc, slogger)
@@ -285,6 +289,10 @@ func main() {
 		AllowedOrigins: appCfg.CORS.AllowedOrigins,
 		Logger:         slogger,
 	})
+	// 票 09：不活动巡检（30s 节拍：4:30 预警一次、5:00 暂停断连停 ASR）。
+	voiceInactivity := voiceinterview.NewInactivitySweeper(voiceGateway, appCfg.VoiceInterview, slogger)
+	voiceInactivity.Start(ctx)
+	defer voiceInactivity.Stop()
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

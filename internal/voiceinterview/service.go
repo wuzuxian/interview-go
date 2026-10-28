@@ -45,6 +45,8 @@ type SessionStore interface {
 	// 票 08 评估恢复巡检。
 	FindStaleEvaluateSessions(ctx context.Context, status VoiceEvaluateStatus, before time.Time) ([]SessionEntity, error)
 	UpdateEvaluateRequeue(ctx context.Context, sessionID int64, at time.Time) error
+	// 票 09 僵尸清理：开始时间早于 before 的进行中会话（直查 DB，不受缓存影响）。
+	FindStaleInProgressSessions(ctx context.Context, before time.Time) ([]SessionEntity, error)
 }
 
 // EvaluationDetailSource 评估明细读取接缝（GET/POST evaluation 的 COMPLETED 分支，
@@ -53,11 +55,13 @@ type EvaluationDetailSource interface {
 	GetEvaluationDetail(ctx context.Context, sessionID int64) (*VoiceEvaluationDetailDTO, error)
 }
 
-// EvalRecoveryParams 评估恢复巡检阈值（对齐 Java PENDING_EVALUATION_REQUEUE_DELAY=3min、
-// PROCESSING_EVALUATION_TIMEOUT=30min；零值时由 NewService 补默认）。
+// EvalRecoveryParams 评估恢复巡检与僵尸清理阈值（对齐 Java
+// PENDING_EVALUATION_REQUEUE_DELAY=3min、PROCESSING_EVALUATION_TIMEOUT=30min 与
+// cleanupStaleSessions 的 minusHours(2)（票 09）；零值时由 NewService 补默认）。
 type EvalRecoveryParams struct {
-	PendingRequeueAfter time.Duration
-	ProcessingFailAfter time.Duration
+	PendingRequeueAfter  time.Duration
+	ProcessingFailAfter  time.Duration
+	StaleInProgressAfter time.Duration
 }
 
 // Service 会话域服务。
@@ -92,6 +96,9 @@ func NewService(deps ServiceDeps) *Service {
 	}
 	if deps.Recovery.ProcessingFailAfter <= 0 {
 		deps.Recovery.ProcessingFailAfter = 30 * time.Minute
+	}
+	if deps.Recovery.StaleInProgressAfter <= 0 {
+		deps.Recovery.StaleInProgressAfter = 2 * time.Hour
 	}
 	return &Service{repo: deps.Repo, cache: deps.Cache, stream: deps.Stream, logger: deps.Logger,
 		evalDetail: deps.EvalDetail, recovery: deps.Recovery}
@@ -724,7 +731,8 @@ func (s *Service) evaluationDetail(ctx context.Context, sessionID int64) (*Voice
 // RecoverStaleEvaluations 按 DB 状态时间戳巡检（时钟经 now 注入便于测试）：
 // PENDING 超 PendingRequeueAfter 补投（清空 evaluate_error、推进 updated_at 后 XADD），
 // PROCESSING 超 ProcessingFailAfter 置 FAILED + "评估超时，请重新触发"。
-// 返回清理条数。IN_PROGRESS 超 2h 的强制结束属票 09 的僵尸清理段。
+// 返回清理条数。IN_PROGRESS 超 2h 的强制结束见 EndStaleInProgressSessions
+// （票 09 僵尸段，与本法同一 60s 调度器触发）。
 func (s *Service) RecoverStaleEvaluations(ctx context.Context, now time.Time) (int, error) {
 	cleaned := 0
 
@@ -754,6 +762,35 @@ func (s *Service) RecoverStaleEvaluations(ctx context.Context, now time.Time) (i
 	for _, e := range processings {
 		s.logger.Info("重置卡死的 PROCESSING 评估", slog.Int64("sessionId", e.ID))
 		s.UpdateEvaluateStatus(ctx, e.ID, VoiceEvaluateFailed, stringPtr("评估超时，请重新触发"))
+		cleaned++
+	}
+	return cleaned, nil
+}
+
+// EndStaleInProgressSessions 僵尸清理段（票 09，Java cleanupStaleSessions L739-752
+// 的 IN_PROGRESS 段）：以 DB 为准查询 startTime 早于 now-StaleInProgressAfter 的
+// 进行中会话（不经缓存，Java findByStatusAndStartTimeBefore），逐场走结束全语义——
+// endTime/actualDuration/评估 PENDING 落库 + 失效缓存 + 提交后投递评估流。
+// 返回强制结束条数。时钟经 now 注入便于测试。
+func (s *Service) EndStaleInProgressSessions(ctx context.Context, now time.Time) (int, error) {
+	stale, err := s.repo.FindStaleInProgressSessions(ctx, now.Add(-s.recovery.StaleInProgressAfter))
+	if err != nil {
+		return 0, apperr.Wrap(apperr.CodeInternalError, "查询超时未结束的语音面试会话失败", err)
+	}
+	cleaned := 0
+	for _, e := range stale {
+		s.logger.Warn("清理超时未结束的语音面试会话",
+			slog.Int64("sessionId", e.ID), slog.Time("startTime", timeValue(e.StartTime)))
+		fillEndOfSession(&e, now)
+		if err := s.repo.UpdateEnd(ctx, &e); err != nil {
+			return cleaned, apperr.Wrap(apperr.CodeInternalError, "结束语音面试会话失败", err)
+		}
+		s.invalidateSessionCache(ctx, e.ID)
+
+		s.logger.Info("语音面试会话已结束，评估已触发",
+			slog.Int64("sessionId", e.ID),
+			slog.Int("actualDuration", intValue(e.ActualDuration)))
+		s.sendEvaluateTaskAfterCommit(ctx, e.ID)
 		cleaned++
 	}
 	return cleaned, nil

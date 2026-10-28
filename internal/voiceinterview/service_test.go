@@ -137,6 +137,12 @@ func (s *fakeStore) UpdatePause(ctx context.Context, sessionID int64, pausedAt t
 	defer s.mu.Unlock()
 	s.rec.add("update-pause")
 	s.updatePause = append(s.updatePause, pauseCall{sessionID, pausedAt})
+	// 镜像真实 UPDATE（status='PAUSED' + paused_at），断开自动结束路径依赖该状态。
+	if e, ok := s.sessions[sessionID]; ok {
+		paused := VoiceStatusPaused
+		e.Status = &paused
+		e.PausedAt = &pausedAt
+	}
 	return nil
 }
 

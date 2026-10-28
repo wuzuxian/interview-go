@@ -196,6 +196,8 @@ func (g *Gateway) establish(conn *websocket.Conn, key string, sessionID int64) {
 
 	// 上行单条消息上限 256KB（Java setTextMessageSizeLimit/setBinaryMessageSizeLimit）。
 	conn.SetReadLimit(g.cfg.WSMessageLimit)
+	// 建连即计活动起点（Java afterConnectionEstablished L165 的 lastActivityTime.put）。
+	s.touchActivity()
 	g.logger.Info("WebSocket 连接已建立", slog.Int64("sessionId", sessionID))
 
 	// ASR（Java startDashScopeStt）：每连接读最新语音配置（设置页修改后热生效）。
@@ -515,16 +517,32 @@ func (g *Gateway) cleanup(s *wsSession) {
 	})
 }
 
-// Close 关闭全部活动连接（优雅关闭钩子，票 09 接管调度）：断开路径会自动结束
-// 进行中的会话并触发评估（spec 实现决策 20）。
-func (g *Gateway) Close() {
+// liveSnapshot 活动连接快照（巡检与优雅关闭遍历用，不在锁内回调会话方法）。
+func (g *Gateway) liveSnapshot() []*wsSession {
 	g.mu.Lock()
-	sessions := make([]*wsSession, 0, len(g.live))
+	defer g.mu.Unlock()
+	out := make([]*wsSession, 0, len(g.live))
 	for _, s := range g.live {
-		sessions = append(sessions, s)
+		out = append(out, s)
 	}
-	g.mu.Unlock()
-	for _, s := range sessions {
+	return out
+}
+
+// unregister 从活动表移除连接（仅当仍是当前注册连接；暂停超时路径同步移除，
+// 对齐 Java handlePauseTimeout L1208-1210 的 sessions/lastActivityTime.remove）。
+func (g *Gateway) unregister(s *wsSession) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.live[s.key] == s {
+		delete(g.live, s.key)
+	}
+}
+
+// Close 关闭全部活动连接（优雅关闭，spec 实现决策 20）：仅断开底层连接，会话级
+// 收尾（取消回合、停 ASR、自动结束进行中的会话并触发评估）由每条连接的断开路径
+// （cleanup）幂等完成，行为等价于逐个断开。
+func (g *Gateway) Close() {
+	for _, s := range g.liveSnapshot() {
 		_ = s.conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutdown"),
 			time.Now().Add(time.Second))
@@ -544,8 +562,9 @@ type wsSession struct {
 	state *sessionState
 	asr   *AsrClient
 
-	closeOnce sync.Once
-	lastAct   atomic.Int64 // 最近活动 UnixMilli（Java lastActivityTime，票 09 巡检消费）
+	closeOnce   sync.Once
+	lastAct     atomic.Int64 // 最近活动 UnixMilli（Java lastActivityTime，票 09 巡检消费）
+	warnedPause atomic.Bool  // pause_timeout_warning 已推（同一不活动窗口只推一次，票 09）
 }
 
 // abandon 被新连接顶替时作废旧连接：关闭收发（读循环退出后 cleanup 走非当前
@@ -569,12 +588,23 @@ func (s *wsSession) alive() bool {
 	}
 }
 
-// touchActivity 更新最近活动时间（Java handleTextMessage L331，票 09 暂停超时消费）。
-func (s *wsSession) touchActivity() { s.lastAct.Store(time.Now().UnixMilli()) }
+// touchActivity 更新最近活动时间（Java handleTextMessage L331：任何上行消息刷新，
+// 票 09 暂停超时消费）；活动刷新同时解除预警武装（同一不活动窗口只推一次预警，
+// 下一次不活动窗口重新计）。
+func (s *wsSession) touchActivity() {
+	s.lastAct.Store(time.Now().UnixMilli())
+	s.warnedPause.Store(false)
+}
 
 // lastActivityAt 最近活动时刻。
 func (s *wsSession) lastActivityAt() time.Time {
 	return time.UnixMilli(s.lastAct.Load())
+}
+
+// markPauseWarned 预警武装（CAS 保证同一不活动窗口内 30s 巡检只推一次
+// pause_timeout_warning；票面对 Java 每 30s 重复推的一次性收敛）。
+func (s *wsSession) markPauseWarned() bool {
+	return s.warnedPause.CompareAndSwap(false, true)
 }
 
 // sendJSON 序列化并下发；序列化失败对齐 Java toJson 返回 "{}" 并继续发送。
@@ -586,6 +616,18 @@ func (s *wsSession) sendJSON(v any) {
 		raw = []byte("{}")
 	}
 	s.sink.send(raw)
+}
+
+// sendJSONSync 序列化并同步下发（返回前已写出）：暂停超时等必须先送达再断连的
+// 管理消息使用；序列化失败同样按 "{}" 发送。
+func (s *wsSession) sendJSONSync(v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		s.gw.logger.Error("下行消息序列化失败",
+			slog.Int64("sessionId", s.id), slog.String("error", err.Error()))
+		raw = []byte("{}")
+	}
+	_ = s.sink.sendSync(raw)
 }
 
 // ===== TurnSpeaker 实现（下行六类） =====
@@ -650,6 +692,7 @@ type wsSink struct {
 	ch           chan []byte
 	done         chan struct{}
 	once         sync.Once
+	writeMu      sync.Mutex // 串行化 writeLoop 与 sendSync 的底层写（gorilla 不允许并发写）
 	pending      atomic.Int64
 	limit        int64
 	writeTimeout time.Duration
@@ -704,8 +747,11 @@ func (s *wsSink) writeLoop() {
 		select {
 		case msg := <-s.ch:
 			s.pending.Add(-int64(len(msg)))
+			s.writeMu.Lock()
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
-			if err := s.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			err := s.conn.WriteMessage(websocket.TextMessage, msg)
+			s.writeMu.Unlock()
+			if err != nil {
 				s.logger.Warn("下行消息发送失败，关闭连接", slog.String("error", err.Error()))
 				s.close()
 				return
@@ -715,6 +761,24 @@ func (s *wsSink) writeLoop() {
 		}
 	}
 }
+
+// sendSync 同步直写一条管理消息（绕过出站队列，返回前已写出）：暂停超时提示等
+// 「必须先送达再断连」的管理消息使用，对齐 Java sendMessage 的同步发送语义
+// （ConcurrentWebSocketSessionDecorator）。已关闭安全拒绝；写超时沿配置。
+func (s *wsSink) sendSync(msg []byte) error {
+	select {
+	case <-s.done:
+		return errSinkClosed
+	default:
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_ = s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
+	return s.conn.WriteMessage(websocket.TextMessage, msg)
+}
+
+// errSinkClosed 发送通道已关闭（sendSync 拒绝写入）。
+var errSinkClosed = errors.New("voiceinterview: 发送通道已关闭")
 
 // close 关闭发送通道与底层连接（幂等）。
 func (s *wsSink) close() {

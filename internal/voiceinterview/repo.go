@@ -213,6 +213,16 @@ func (r *Repo) FindStaleEvaluateSessions(ctx context.Context, status VoiceEvalua
 	return list, err
 }
 
+// FindStaleInProgressSessions 开始时间早于 before 的进行中会话（票 09 僵尸清理
+// 数据源，对齐 Java findByStatusAndStartTimeBefore；直查 DB，不受会话缓存影响）。
+func (r *Repo) FindStaleInProgressSessions(ctx context.Context, before time.Time) ([]SessionEntity, error) {
+	var list []SessionEntity
+	err := r.db.WithContext(ctx).
+		Where("status = ? AND start_time < ?", VoiceStatusInProgress, before).
+		Find(&list).Error
+	return list, err
+}
+
 // UpdateEvaluateRequeue 滞留 PENDING 补投前置（Java cleanupStaleSessions L759-768）：
 // evaluate_error 清空 + updated_at 推进到巡检时钟（GORM 自动填充同为 updated_at）。
 func (r *Repo) UpdateEvaluateRequeue(ctx context.Context, sessionID int64, at time.Time) error {
