@@ -1,12 +1,14 @@
 package interview
 
 import (
+	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/wuzuxian/interview/internal/apperr"
+	"github.com/wuzuxian/interview/internal/pdfexport"
 	"github.com/wuzuxian/interview/internal/ratelimit"
 	"github.com/wuzuxian/interview/internal/result"
 )
@@ -57,6 +59,8 @@ func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	// 报告/明细（票 06）：与 Java 一致无 @RateLimit（笔记 03 §5）。
 	h.GET("/sessions/:sessionId/report", ctl.getReport)
 	h.GET("/sessions/:sessionId/details", ctl.getDetails)
+	// 报告 PDF 导出（票 08）：与 Java 一致无 @RateLimit。
+	h.GET("/sessions/:sessionId/export", ctl.exportPDF)
 	h.DELETE("/sessions/:sessionId", ctl.deleteSession)
 }
 
@@ -220,4 +224,25 @@ func (ctl *Controller) getDetails(c *gin.Context) {
 		return
 	}
 	result.OK(c, data)
+}
+
+// exportPDF GET /sessions/{id}/report 导出 PDF（票 08）：成功返回二进制流
+// （Content-Type application/pdf + RFC 5987 文件名）；失败按裁决 #10 用 Result 包装
+// （HTTP 200 + 业务码），不复制 Java 的空 body 500。
+func (ctl *Controller) exportPDF(c *gin.Context) {
+	sessionID := c.Param("sessionId")
+	in, err := ctl.report.GetInterviewExportInput(c.Request.Context(), sessionID)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	pdfBytes, err := pdfexport.ExportInterviewReport(*in)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	// 中文文件名：RFC 5987 filename*（percent-encoded UTF-8）+ ASCII 回退 filename（兼容旧客户端）。
+	encoded := url.PathEscape("模拟面试报告_" + sessionID + ".pdf")
+	c.Header("Content-Disposition", `attachment; filename="interview-report_`+sessionID+`.pdf"; filename*=UTF-8''`+encoded)
+	c.Data(200, "application/pdf", pdfBytes)
 }

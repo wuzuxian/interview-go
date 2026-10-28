@@ -78,9 +78,13 @@ func newDoc() (*fpdf.Fpdf, error) {
 	pdf.AddPage()
 
 	// fpdf 内部记录错误状态，加载后用 Error() 检查。
-	pdf.AddUTF8FontFromBytes(fontCJKName, "", fontCJK)
-	if err := pdf.Error(); err != nil {
-		return nil, apperr.New(apperr.CodeExportPDFFailed, "创建中文字体失败，请联系管理员")
+	// 中文字体注册常规/粗体/斜体/粗斜四变体（同字形，仅用于 SetFont 样式查找；
+	// 单字重字体无法合成真粗体，样式为 Java 排版意图的近似）。
+	for _, style := range []string{"", "B", "I", "BI"} {
+		pdf.AddUTF8FontFromBytes(fontCJKName, style, fontCJK)
+		if err := pdf.Error(); err != nil {
+			return nil, apperr.New(apperr.CodeExportPDFFailed, "创建中文字体失败，请联系管理员")
+		}
 	}
 	pdf.AddUTF8FontFromBytes(fontSymbolsName, "", fontSymbols)
 	if err := pdf.Error(); err != nil {
