@@ -1,5 +1,5 @@
 // Controller 语音面试模块控制器，路径与 Java 版 VoiceInterviewController 一致
-// （基路径 /api/voice-interview；evaluation 两接口属票 08，本票不注册）。
+// （基路径 /api/voice-interview；GET/POST evaluation 两接口属票 08）。
 // 与 Java 一致无 @RateLimit（语音限流配置为 Java 死配置，spec 偏离 #3 不移植）。
 package voiceinterview
 
@@ -31,7 +31,8 @@ func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	h.PUT("/sessions/:sessionId/resume", ctl.resumeSession)
 	h.DELETE("/sessions/:sessionId", ctl.deleteSession)
 	h.GET("/sessions/:sessionId/messages", ctl.getMessages)
-	// GET/POST /sessions/{id}/evaluation 属票 08。
+	h.GET("/sessions/:sessionId/evaluation", ctl.getEvaluation)
+	h.POST("/sessions/:sessionId/evaluation", ctl.retryEvaluation)
 }
 
 // parseSessionID 路径参数解析（Java @PathVariable Long：非数字在 Spring 侧 400）。
@@ -153,6 +154,36 @@ func (ctl *Controller) getMessages(c *gin.Context) {
 		return
 	}
 	data, err := ctl.svc.GetConversationHistoryDTO(c.Request.Context(), id)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
+}
+
+// getEvaluation GET /sessions/{id}/evaluation：轮询评估状态，COMPLETED 内嵌报告
+// （Java Controller getEvaluation L156-177）。
+func (ctl *Controller) getEvaluation(c *gin.Context) {
+	id, ok := parseSessionID(c)
+	if !ok {
+		return
+	}
+	data, err := ctl.svc.GetEvaluationStatus(c.Request.Context(), id)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
+}
+
+// retryEvaluation POST /sessions/{id}/evaluation：显式重试评估（Java Controller
+// generateEvaluation L187-222）。
+func (ctl *Controller) retryEvaluation(c *gin.Context) {
+	id, ok := parseSessionID(c)
+	if !ok {
+		return
+	}
+	data, err := ctl.svc.RetryEvaluation(c.Request.Context(), id)
 	if err != nil {
 		result.FailErr(c, err)
 		return

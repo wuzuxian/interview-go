@@ -41,8 +41,9 @@ type redisEvalStream struct {
 	rdb *redis.Client
 }
 
-// NewRedisEvalStream 创建 Stream 适配器。
-func NewRedisEvalStream(rdb *redis.Client) VoiceEvalStream {
+// NewRedisEvalStream 创建 Stream 适配器（实现 VoiceEvalStreamClient 全集：
+// 票 01 的 XAddTask 入队 + 票 08 的消费组读写，见 evaluation_consumer.go）。
+func NewRedisEvalStream(rdb *redis.Client) VoiceEvalStreamClient {
 	return &redisEvalStream{rdb: rdb}
 }
 

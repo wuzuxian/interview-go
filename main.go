@@ -246,18 +246,37 @@ func main() {
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
-	// 语音面试模块（票 01：会话域 + REST 契约；评估流仅入队，消费侧属票 08）。
-	// 票 04：WS 网关（每连接读最新语音配置——设置页修改热生效；模型回合挂钩留空，
-	// 内置空实现，票 06 接入真实 LLM+TTS 管道）。
+	// 语音面试模块（票 01：会话域 + REST 契约。票 04：WS 网关——每连接读最新语音
+	// 配置，设置页修改热生效；模型回合挂钩留空，内置空实现，票 06 接入真实 LLM+TTS
+	// 管道。票 08：评估链路——评估服务复用文字面试的 evalRunner
+	// （app.interview.evaluation 引擎配置与降级接缝共用）与 interviewSvc 的方向评估
+	// 参考段；repo + Redis 会话缓存 + 评估流读写 + 消费侧与恢复调度已接入）。
 	voiceRepo := voiceinterview.NewRepo(db.DB)
 	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
 	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
-	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
-		Repo:   voiceRepo,
-		Cache:  voiceCache,
-		Stream: voiceStream,
+	voiceEvalSvc := voiceinterview.NewEvaluationService(voiceinterview.EvaluationServiceDeps{
+		Store:  voiceRepo,
+		Eval:   evalRunner,
+		Refs:   interviewSvc,
 		Logger: slogger,
 	})
+	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
+		Repo:       voiceRepo,
+		Cache:      voiceCache,
+		Stream:     voiceStream,
+		Logger:     slogger,
+		EvalDetail: voiceEvalSvc,
+		Recovery: voiceinterview.EvalRecoveryParams{
+			PendingRequeueAfter: appCfg.VoiceInterview.EvaluatePendingRequeueAfter,
+			ProcessingFailAfter: appCfg.VoiceInterview.EvaluateProcessingFailAfter,
+		},
+	})
+	voiceEvalConsumer := voiceinterview.NewVoiceEvaluateConsumer(voiceStream, voiceRepo, voiceEvalSvc, slogger)
+	voiceEvalConsumer.Start(ctx)
+	defer voiceEvalConsumer.Stop()
+	voiceEvalRecovery := voiceinterview.NewEvalRecoveryScheduler(voiceSvc, appCfg.VoiceInterview.CleanupInterval, slogger)
+	voiceEvalRecovery.Start(ctx)
+	defer voiceEvalRecovery.Stop()
 	voiceCtl := voiceinterview.NewController(voiceSvc)
 	voiceGateway := voiceinterview.NewGateway(voiceinterview.GatewayDeps{
 		Service:        voiceSvc,

@@ -176,6 +176,10 @@ func (s *fakeStore) UpdateEvaluateStatus(ctx context.Context, sessionID int64, s
 		return s.evalUpdErr
 	}
 	s.evalUpdates = append(s.evalUpdates, evalUpdate{sessionID, status, evalErr})
+	if e, ok := s.sessions[sessionID]; ok {
+		e.EvaluateStatus = &status
+		e.EvaluateError = evalErr
+	}
 	return nil
 }
 

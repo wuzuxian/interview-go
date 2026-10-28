@@ -110,3 +110,4 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但模拟面试只�
 2. **Micrometer 指标不移植**：Go 无指标设施，以 slog 结构化日志记录各阶段耗时替代，不影响前端契约。
 3. **死配置不移植**：app.voice-interview.rate-limit.*、audio.*、遗留 debounce 键、tts.default-voice 在 Java 模块内零消费（已核实），Go 不搬运。
 4. **配置键名 snake_case**（app.voice_interview）：项目既有惯例，非 Java 的 kebab-case。
+5. **消费者幂等跳过语义按 Java 原文**（票 08）：决策 15 的"幂等跳过非 PENDING"按字面实现会自相矛盾——首轮失败后状态停留 PROCESSING，重投消息若因"非 PENDING"被跳过则"重投至多 3 次"永不生效；故按 Java 原文 shouldSkip（VoiceEvaluateStreamConsumer L82-86）实现：仅会话缺失或 evaluate_status=COMPLETED 时跳过，PROCESSING/FAILED/PENDING 均放行。POST 重试与恢复补投均在置 PENDING 后入队，两种语义下这些主链路行为一致。
