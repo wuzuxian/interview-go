@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -119,6 +120,19 @@ func InvokeStructured[T any](
 
 		var out T
 		if err := json.Unmarshal([]byte(msg.Content), &out); err != nil {
+			// 本地修复路径（对齐 Java convertWithRepair）：先修复未转义引号再重解析，
+			// 仍失败才走“修复提示重试”循环；修复不消耗调用次数（总调用仍受 MaxAttempts 约束）。
+			repaired := repairUnescapedQuotesInJSONStrings(msg.Content)
+			if repaired != msg.Content {
+				var fixed T
+				if rerr := json.Unmarshal([]byte(repaired), &fixed); rerr == nil {
+					if invoker.Logger != nil {
+						invoker.Logger.Warn("结构化 JSON 存在未转义引号，已在本地修复后解析成功",
+							slog.String("label", label), slog.Int("attempt", attempt))
+					}
+					return &fixed, nil
+				}
+			}
 			lastErr = fmt.Sprintf("JSON 解析失败: %v", err)
 			invoker.logf(label, attempt, lastErr, msg.Content)
 			continue
@@ -139,6 +153,68 @@ func (i *StructuredInvoker) logf(label string, attempt int, reason, content stri
 	i.Logger.Warn("结构化输出解析失败",
 		slog.String("label", label), slog.Int("attempt", attempt),
 		slog.String("reason", reason), slog.String("content_snippet", snippet))
+}
+
+// ===== 本地 JSON 修复（Java StructuredOutputInvoker.repairUnescapedQuotesInJsonStrings 逐字移植）=====
+
+// repairUnescapedQuotesInJSONStrings 修复 JSON 字符串值内的未转义双引号：
+// 扫描时跟踪字符串内/转义状态，字符串内遇到引号时按后继字符判断是真终结符还是
+// 内容引号，后者补转义为 \"。无修复时原样返回（调用方据此判断是否尝试重解析）。
+// 对应 Java repairUnescapedQuotesInJsonStrings（按字符扫描；此处按 rune 语义等价，
+// 全部结构判定字符均为 ASCII）。
+func repairUnescapedQuotesInJSONStrings(content string) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
+	runes := []rune(content)
+	repaired := make([]rune, 0, len(runes)+16)
+	inString := false
+	escaping := false
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if !inString {
+			if ch == '"' {
+				inString = true
+			}
+			repaired = append(repaired, ch)
+			continue
+		}
+
+		if escaping {
+			repaired = append(repaired, ch)
+			escaping = false
+			continue
+		}
+		if ch == '\\' {
+			repaired = append(repaired, ch)
+			escaping = true
+			continue
+		}
+		if ch == '"' {
+			if isLikelyJSONStringTerminator(runes, i+1) {
+				inString = false
+				repaired = append(repaired, ch)
+			} else {
+				repaired = append(repaired, '\\', '"')
+			}
+			continue
+		}
+		repaired = append(repaired, ch)
+	}
+	return string(repaired)
+}
+
+// isLikelyJSONStringTerminator 引号后跳过空白，仅当后继为 , } ] : 之一（或到结尾）
+// 才视为字符串真终结符（Java isLikelyJsonStringTerminator 逐字）。
+func isLikelyJSONStringTerminator(content []rune, start int) bool {
+	for i := start; i < len(content); i++ {
+		next := content[i]
+		if unicode.IsSpace(next) {
+			continue
+		}
+		return next == ',' || next == '}' || next == ']' || next == ':'
+	}
+	return true
 }
 
 // normalizeAIErr 将网络/HTTP 错误转换为 Java 版全局异常处理器的语义：
