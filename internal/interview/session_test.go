@@ -372,24 +372,8 @@ func TestSessionListItemDTOContract(t *testing.T) {
 	}
 }
 
-// 契约：SessionDTO 字段名与 Java InterviewSessionDTO 一致。
-func TestSessionDTOContract(t *testing.T) {
-	b, _ := json.Marshal(SessionDTO{})
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	wantKeys := []string{
-		"sessionId", "resumeText", "totalQuestions", "currentIndex", "questions",
-		"status", "knowledgeBaseId", "interviewCategory",
-	}
-	if len(m) != len(wantKeys) {
-		t.Fatalf("键数量不符: got %d want %d", len(m), len(wantKeys))
-	}
-	for _, k := range wantKeys {
-		if _, ok := m[k]; !ok {
-			t.Fatalf("缺字段 %q", k)
-		}
-	}
-}
+// SessionDTO 的键集契约以前端 TS 类型为黄金清单，锁定在 contract_test.go
+// （曾因本文件旧断言把 currentIndex 误当契约名而漏检字段错位）。
 
 // 契约：CreateRequest 字段名与 Java CreateInterviewRequest record 一致（一次建全，
 // customCategories/jdText 本票接收但票 07 才使用）。

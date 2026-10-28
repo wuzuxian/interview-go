@@ -253,12 +253,12 @@ func (s *SessionService) createSessionInternal(ctx context.Context, req CreateRe
 	}
 
 	return &SessionDTO{
-		SessionID:      sessionID,
-		ResumeText:     resumeText,
-		TotalQuestions: len(questions),
-		CurrentIndex:   0,
-		Questions:      questions,
-		Status:         StatusCreated,
+		SessionID:            sessionID,
+		ResumeText:           resumeText,
+		TotalQuestions:       len(questions),
+		CurrentQuestionIndex: 0,
+		Questions:            questions,
+		Status:               StatusCreated,
 	}, nil
 }
 
@@ -742,14 +742,14 @@ func cachedToDTO(c *CachedSession) *SessionDTO {
 		}
 	}
 	return &SessionDTO{
-		SessionID:         c.SessionID,
-		ResumeText:        c.ResumeText,
-		TotalQuestions:    len(questions),
-		CurrentIndex:      c.CurrentIndex,
-		Questions:         questions,
-		Status:            c.Status,
-		KnowledgeBaseID:   c.KnowledgeBaseID,
-		InterviewCategory: c.InterviewCategory,
+		SessionID:            c.SessionID,
+		ResumeText:           c.ResumeText,
+		TotalQuestions:       len(questions),
+		CurrentQuestionIndex: c.CurrentIndex,
+		Questions:            questions,
+		Status:               c.Status,
+		KnowledgeBaseID:      c.KnowledgeBaseID,
+		InterviewCategory:    c.InterviewCategory,
 	}
 }
 

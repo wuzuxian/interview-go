@@ -68,17 +68,17 @@ type CreateRequest struct {
 }
 
 // SessionDTO 创建/详情响应体，对应 Java InterviewSessionDTO：
-// sessionId, resumeText, totalQuestions, currentIndex, questions[], status,
+// sessionId, resumeText, totalQuestions, currentQuestionIndex, questions[], status,
 // knowledgeBaseId, interviewCategory。
 type SessionDTO struct {
-	SessionID         string        `json:"sessionId"`
-	ResumeText        string        `json:"resumeText"`
-	TotalQuestions    int           `json:"totalQuestions"`
-	CurrentIndex      int           `json:"currentIndex"`
-	Questions         []QuestionDTO `json:"questions"`
-	Status            SessionStatus `json:"status"`
-	KnowledgeBaseID   *int64        `json:"knowledgeBaseId"`
-	InterviewCategory *string       `json:"interviewCategory"`
+	SessionID            string        `json:"sessionId"`
+	ResumeText           string        `json:"resumeText"`
+	TotalQuestions       int           `json:"totalQuestions"`
+	CurrentQuestionIndex int           `json:"currentQuestionIndex"`
+	Questions            []QuestionDTO `json:"questions"`
+	Status               SessionStatus `json:"status"`
+	KnowledgeBaseID      *int64        `json:"knowledgeBaseId"`
+	InterviewCategory    *string       `json:"interviewCategory"`
 }
 
 // AnswerRequest PUT/POST /sessions/{id}/answers 请求体，对齐 Java 松散 Map 取值
