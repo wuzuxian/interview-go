@@ -89,3 +89,19 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但模拟面试功�
 - 参考实现：仓库外的 `/home/wuzuxian/interview-guide`（Java 25 + Spring Boot 4.1 + Spring AI 2.0）。实现时需逐字摘取：prompt 原文、静态兜底题内容、限流注解参数、application.yml 中 app.interview 默认值、Java 版报告 PDF 章节结构。
 - 术语以 `GLOSSARY.md` 为准；ADR 0001（表结构沿用）、ADR 0002（ChatModel 直调）必须遵守。
 - 与简历模块的既有耦合保持不变：创建请求携带简历文本 + 简历 ID；评估从 DB 关联取简历文本。
+
+## 与 Java 行为的有意偏离（实现完成后的完整清单）
+
+除“逐字对齐 Java”外，以下偏离是经过裁决的有意行为，回退任何一条前请先读对应理由：
+
+1. **questionCount 在 Go 侧真正校验**（3-20）：Java 创建端点漏了 @Valid，校验形同虚设；spec 明确要求校验。
+2. **report 对已评估场次直接返回存量报告**：Java 每次 GET /report 都重调 LLM 并覆盖旧报告；Go 仅 COMPLETED（未评估）走同步兜底评估，避免重复模型调用与报告被覆盖。
+3. **导出失败用 Result 包装**（HTTP 200 + 业务码）：Java 返回 HTTP 500 空 body，与仓库统一响应约定不符。
+4. **评估全批失败上抛走重试**（0 批产出逐题评估时返回 error → 消费者重试 3 次 → FAILED + evaluate_error）：Java 会落全零报告并置 EVALUATED，使重试机制失效——正是 docs/经验-AI调用超时与异步任务兜底.md 警告的“失败固化为成功”；部分成功仍按 Java 逐批降级，两种降级文案逐字保留。
+5. **出题全失败回退静态兜底题**（不报错）：Java 在单/双路全失败时上抛 BusinessException，但 spec 用户故事 21 明确要求“功能不因模型故障不可用”；Provider 解析错误（未知 provider）仍透传业务错误。双路内部降级（简历路失败→全方向题）与 Java 逐字一致。
+6. **同步报告保存失败上抛 error**：Java 为 warn-only；按经验文档教训，保存失败不应固化为成功（客户端可重试）。
+7. **限流窗口用固定窗口近似** Java 滑动窗口：额度与端点逐字一致（创建 全局5/IP5、提交 10、parse-jd IP5，均每秒），仅窗口算法有别，未引入新限流组件。
+8. **评估恢复调度器（ZSET 在队时间戳 + 阈值补投）语义强于 Java**：interview 表无恢复列（ADR 0001），Java 仅 PEL 认领；Go 额外补投停滞任务，去重靠 shouldSkip 守卫。
+9. **PDF 标题用“模拟面试报告”**（Java 原文）**并新增“分类得分”节**（票面验收要求，Java 无此节）；问答详情补要点与追问标记；无页眉页脚、书签树保留。
+10. **答案提交不校验顺序**（可跳题）、**DELETE 不幂等不清缓存**、**shouldSkip 守卫**、**resumeId 复用静默返回旧场次**：均照抄 Java 逐字行为（包括其怪癖），未做“改良”。
+11. **实现级细节**：锁轮询 100ms（Java Redisson 默认 1.5s）、缓存写失败不阻断创建（读路径 DB 兜底）、categoryScores 按分类名稳定排序（Java HashMap 无序）、answered_at 更新时刷新（Java 仅首次写入）、questionIndex 缺失返回 400（Java NPE→500）。
