@@ -193,11 +193,13 @@ func main() {
 		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+	// 出题服务（票 07）：双路并行真实出题，LLM 调用经 ModelResolver（超时走 llm_call_timeout）。
+	questionSvc := interview.NewQuestionService(interviewSvc, bridge, invoker, appCfg.Interview.FollowUpCount, slogger)
 	// 场次子系统（票 03/04）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
 	// 评估入队扩展点票 06 注入真实现，当前传 nil（空操作）。
 	sessionCache := interview.NewSessionCache(rdb.Client, appCfg.Interview, slogger)
 	sessionRepo := interview.NewRepo(db.DB)
-	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, appCfg.Interview, slogger, nil)
+	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, questionSvc, appCfg.Interview, slogger, nil)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。

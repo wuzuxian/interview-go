@@ -181,5 +181,75 @@ func (r *Repo) ResumeExists(ctx context.Context, resumeID int64) (bool, error) {
 	return n > 0, err
 }
 
+// ===== 历史去重（出题输入，对齐 Java InterviewPersistenceService.getHistoricalQuestions）=====
+
+// 历史查询窗口（对齐 Java findTop10… 与 MAX_HISTORICAL_QUESTIONS）。
+const (
+	maxHistoricalSessions  = 10
+	maxHistoricalQuestions = 60
+)
+
+// HistoricalQuestion 历史主问题摘要（对齐 Java model HistoricalQuestion record）：
+// Type 为分类 key（如 MYSQL/JAVA）；TopicSummary 为知识点摘要，为空时由段落构造截取题面兜底。
+type HistoricalQuestion struct {
+	Question     string
+	Type         string
+	TopicSummary *string
+}
+
+// GetHistoricalQuestions 出题去重输入（对齐 Java getHistoricalQuestions，370-401 行）：
+// 有 resumeId 时按 resumeId + skillId 精确匹配，无 resumeId 时按 skillId 查全部；
+// 均取最近 10 场（created_at desc），解析 questions_json 取主问题，
+// 按题面去重（保持首见顺序）、最多 60 条；单场 JSON 解析失败跳过该场（对齐 Java log-and-empty）。
+func (r *Repo) GetHistoricalQuestions(ctx context.Context, skillID string, resumeID *int64) ([]HistoricalQuestion, error) {
+	var rows []SessionEntity
+	q := r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Select("session_id", "questions_json").
+		Order("created_at DESC").Limit(maxHistoricalSessions)
+	if resumeID != nil {
+		q = q.Where("resume_id = ? AND skill_id = ?", *resumeID, skillID)
+	} else {
+		q = q.Where("skill_id = ?", skillID)
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	jsons := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.QuestionsJSON != nil && *row.QuestionsJSON != "" {
+			jsons = append(jsons, *row.QuestionsJSON)
+		}
+	}
+	return collectHistoricalQuestions(jsons), nil
+}
+
+// collectHistoricalQuestions 纯逻辑（可单测）：逐场解析 → 过滤追问 → 题面去重 → 截 60 条。
+func collectHistoricalQuestions(sessionJSONs []string) []HistoricalQuestion {
+	seen := map[string]bool{}
+	out := []HistoricalQuestion{}
+	for _, js := range sessionJSONs {
+		questions, err := DeserializeQuestions(js)
+		if err != nil {
+			continue // 对齐 Java：解析历史问题 JSON 失败仅记日志，跳过该会话
+		}
+		for _, q := range questions {
+			if q.IsFollowUp || seen[q.Question] {
+				continue
+			}
+			seen[q.Question] = true
+			out = append(out, HistoricalQuestion{
+				Question:     q.Question,
+				Type:         categoryValue(q.Type),
+				TopicSummary: q.TopicSummary,
+			})
+			if len(out) >= maxHistoricalQuestions {
+				return out
+			}
+		}
+	}
+	return out
+}
+
 // IsNotFound 归一 gorm 未找到错误。
 func IsNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }

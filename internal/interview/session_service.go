@@ -1,6 +1,6 @@
-// SessionService 面试场次生命周期：创建（幂等三层 + 未完成复用 + 兜底题）、
+// SessionService 面试场次生命周期：创建（幂等三层 + 未完成复用 + 真实出题 + 兜底降级）、
 // 查询/列表/未完成查询/删除。流程与 Java InterviewSessionService（笔记 05）逐字对齐；
-// 出题本票为静态兜底题，真实出题在票 07。
+// 出题来源为票 07 的真实 LLM 生成（双路并行），静态兜底题保留为最终降级路径。
 package interview
 
 import (
@@ -23,17 +23,18 @@ type EvaluateEnqueuer interface {
 
 // SessionService 场次服务。
 type SessionService struct {
-	repo     *Repo
-	cache    *SessionCache
-	skills   *Service // 方向注册表（创建校验方向存在 + 兜底题取分类）
-	cfg      Config
-	logger   *slog.Logger
-	enqueuer EvaluateEnqueuer // 评估入队扩展点，票 06 注入；nil 时为空操作
+	repo      *Repo
+	cache     *SessionCache
+	skills    *Service         // 方向注册表（创建校验方向存在）
+	questions *QuestionService // 真实出题（票 07：双路并行 + 兜底降级）
+	cfg       Config
+	logger    *slog.Logger
+	enqueuer  EvaluateEnqueuer // 评估入队扩展点，票 06 注入；nil 时为空操作
 }
 
-// NewSessionService 创建场次服务。enqueuer 传 nil 表示评估入队未接入（票 04 阶段）。
-func NewSessionService(repo *Repo, cache *SessionCache, skills *Service, cfg Config, logger *slog.Logger, enqueuer EvaluateEnqueuer) *SessionService {
-	return &SessionService{repo: repo, cache: cache, skills: skills, cfg: cfg, logger: logger, enqueuer: enqueuer}
+// NewSessionService 创建场次服务。enqueuer 传 nil 表示评估入队未接入（票 06 前为空操作）。
+func NewSessionService(repo *Repo, cache *SessionCache, skills *Service, questions *QuestionService, cfg Config, logger *slog.Logger, enqueuer EvaluateEnqueuer) *SessionService {
+	return &SessionService{repo: repo, cache: cache, skills: skills, questions: questions, cfg: cfg, logger: logger, enqueuer: enqueuer}
 }
 
 // CreateSession POST /api/interview/sessions 入口：
@@ -121,13 +122,16 @@ func (s *SessionService) createSessionInternal(ctx context.Context, req CreateRe
 	}
 
 	// 方向存在性校验（票 01 依赖）：默认 java-backend；不存在按票 01 约定返回 3101。
+	// custom + customCategories 走临时构建（票 07），预设校验放行（对齐 Java resolveSkill 分支）。
 	skillID := DefaultSkillID
 	if req.SkillID != nil {
 		skillID = *req.SkillID
 	}
-	categories, ok := s.skills.Categories(skillID)
-	if !ok {
-		return nil, apperr.SkillNotFound(skillID)
+	customMode := skillID == CustomSkillID && len(req.CustomCategories) > 0
+	if !customMode {
+		if _, ok := s.skills.Categories(skillID); !ok {
+			return nil, apperr.SkillNotFound(skillID)
+		}
 	}
 	difficulty := DefaultDifficulty
 	if req.Difficulty != nil {
@@ -135,7 +139,32 @@ func (s *SessionService) createSessionInternal(ctx context.Context, req CreateRe
 	}
 
 	sessionID := NewSessionID()
-	questions := GenerateFallbackQuestions(categories, req.QuestionCount, ClampFollowUpCount(s.cfg.FollowUpCount))
+
+	// 历史去重输入（对齐 Java createSessionInternal：generateQuestionsBySkill 之前查询，
+	// 通用模式按 skillId 查询，有简历时按 resumeId + skillId 精确匹配）。
+	historical, err := s.repo.GetHistoricalQuestions(ctx, skillID, req.ResumeID)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternalError, "加载历史题目失败", err)
+	}
+	s.logger.Info("加载历史题目",
+		slog.String("skillId", skillID),
+		slog.Int64("resumeId", intValue64(req.ResumeID)),
+		slog.Int("historical", len(historical)))
+
+	// 真实 LLM 出题（票 07；兜底题在生成器内部作为最终降级路径）。
+	questions, err := s.questions.GenerateQuestionsBySkill(ctx, QuestionGenParams{
+		LLMProvider:      req.LLMProvider,
+		SkillID:          skillID,
+		Difficulty:       difficulty,
+		ResumeText:       req.ResumeText,
+		QuestionCount:    req.QuestionCount,
+		Historical:       historical,
+		CustomCategories: req.CustomCategories,
+		JDText:           req.JDText,
+	})
+	if err != nil {
+		return nil, err
+	}
 	questionsJSON, err := SerializeQuestions(questions)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeInternalError, "序列化问题列表失败", err)
@@ -740,3 +769,10 @@ func shouldReuseUnfinished(resumeID *int64, forceCreate *bool) bool {
 func boolValue(b *bool) bool { return b != nil && *b }
 
 func sourcePtr(s SourceType) *SourceType { return &s }
+
+func intValue64(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
