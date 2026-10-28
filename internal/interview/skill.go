@@ -257,6 +257,17 @@ func (r *Registry) List() []SkillDTO {
 	return out
 }
 
+// Categories 方向的分类列表快照；方向不存在返回 (nil, false)。
+func (r *Registry) Categories(skillID string) ([]CategoryDTO, bool) {
+	def, ok := r.byID[skillID]
+	if !ok {
+		return nil, false
+	}
+	out := make([]CategoryDTO, len(def.categories))
+	copy(out, def.categories)
+	return out, true
+}
+
 // toDTO 对齐 Java toSkillDTO：name 优先 displayName；isPreset 恒 true；sourceJd 恒 null。
 func (r *Registry) toDTO(id string, def *skillDefinition) *SkillDTO {
 	name := def.displayName

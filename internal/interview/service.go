@@ -56,6 +56,11 @@ func (s *Service) ListSkills() []SkillDTO { return s.reg.List() }
 // GetSkill GET /api/interview/skills/{id}；不存在返回 interview 段业务码。
 func (s *Service) GetSkill(skillID string) (*SkillDTO, error) { return s.reg.Get(skillID) }
 
+// Categories 方向的分类列表（兜底题模板生成用）；方向不存在返回 (nil, false)。
+func (s *Service) Categories(skillID string) ([]CategoryDTO, bool) {
+	return s.reg.Categories(skillID)
+}
+
 // LocateReference 按 ref/shared 规则定位参考题库文件，返回嵌入资源中的路径。
 // 为票 07 的 Prompt 注入预留；找不到返回 false（对齐 Java loadReferenceContent 空串语义）。
 func (s *Service) LocateReference(skillID, ref string, shared bool) (string, bool) {

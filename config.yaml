@@ -104,6 +104,21 @@ app:
       - application/vnd.openxmlformats-officedocument.wordprocessingml.document
       - text/plain
 
+  # 模拟面试（票 03 创建链路；出题/评估段随票 07/08 扩充）
+  interview:
+    # 题量边界（Java @Min(3)/@Max(20)，裁决 #1：Go 必须校验）
+    question_count_min: 3
+    question_count_max: 20
+    # 每题追问数（Java follow-up-count 默认 1，钳制 0-2）
+    follow_up_count: 1
+    # 会话缓存 TTL（Java SESSION_TTL = 24h）
+    session_cache_ttl: 24h
+    # 创建锁：等待 185s / 持有 600s（Java executeWithLock 参数）
+    create_lock_wait: 185s
+    create_lock_lease: 600s
+    # 幂等结果键 TTL（Java CREATE_RESULT_TTL = 1 天）
+    create_result_ttl: 24h
+
   storage:
     endpoint: http://localhost:9000
     access_key: rustfsadmin
