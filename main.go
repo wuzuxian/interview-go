@@ -17,6 +17,7 @@ import (
 	"github.com/wuzuxian/interview/internal/ai"
 	"github.com/wuzuxian/interview/internal/aibridge"
 	"github.com/wuzuxian/interview/internal/httpx"
+	"github.com/wuzuxian/interview/internal/interview"
 	"github.com/wuzuxian/interview/internal/llmprovider"
 	"github.com/wuzuxian/interview/internal/migration"
 	"github.com/wuzuxian/interview/internal/ratelimit"
@@ -183,6 +184,14 @@ func main() {
 	providerCtl := llmprovider.NewController(providerSvc, rl)
 	resumeCtl := resume.NewController(uploader, deleter, history, storeSvc, rl)
 
+	// 面试模块：启动时解析嵌入的 skills 资源，构建方向注册表。
+	interviewSvc, err := interview.NewService(slogger)
+	if err != nil {
+		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	interviewCtl := interview.NewController(interviewSvc)
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -200,6 +209,7 @@ func main() {
 	api := srv.Group("/api")
 	providerCtl.RegisterRoutes(api)
 	resumeCtl.RegisterRoutes(api)
+	interviewCtl.RegisterRoutes(api)
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})
 	})

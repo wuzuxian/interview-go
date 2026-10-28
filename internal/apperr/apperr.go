@@ -53,6 +53,10 @@ const (
 	CodeResumeUploadFailed   = 2003
 	CodeResumeAnalysisFailed = 2007
 	CodeAnalysisNotFound     = 2008
+	// 面试模块 3xxx（对齐 Java ErrorCode 面试模块段；3001-3009 为 Java 会话段，
+	// 留给后续场次票据）。Java 版查询不存在的方向复用 BAD_REQUEST，
+	// 本仓库按票面要求给 404 语义，取 3101 避让会话段。
+	CodeSkillNotFound        = 3101
 	CodeStorageUploadFailed  = 4001
 	CodeStorageDownloadFail  = 4002
 	CodeStorageDeleteFailed  = 4003
@@ -79,3 +83,8 @@ func NotFound(message string) *AppError { return New(CodeNotFound, message) }
 func Internal(message string) *AppError { return New(CodeInternalError, message) }
 
 func ResumeNotFound() *AppError { return New(CodeResumeNotFound, "简历不存在") }
+
+// SkillNotFound 面试方向不存在，消息与 Java 版 getSkill 一致。
+func SkillNotFound(skillID string) *AppError {
+	return New(CodeSkillNotFound, "未找到面试主题: "+skillID)
+}
