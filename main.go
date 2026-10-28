@@ -246,8 +246,9 @@ func main() {
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
-	// 语音面试模块（票 01：会话域 + REST 契约；评估流仅入队，消费侧属票 08；
-	// WS 网关/管道随票 04-07 接入）。repo + Redis 会话缓存 + 评估流入队接缝。
+	// 语音面试模块（票 01：会话域 + REST 契约；评估流仅入队，消费侧属票 08）。
+	// 票 04：WS 网关（每连接读最新语音配置——设置页修改热生效；模型回合挂钩留空，
+	// 内置空实现，票 06 接入真实 LLM+TTS 管道）。
 	voiceRepo := voiceinterview.NewRepo(db.DB)
 	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
 	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
@@ -258,6 +259,13 @@ func main() {
 		Logger: slogger,
 	})
 	voiceCtl := voiceinterview.NewController(voiceSvc)
+	voiceGateway := voiceinterview.NewGateway(voiceinterview.GatewayDeps{
+		Service:        voiceSvc,
+		Settings:       voiceinterview.NewProviderConfigSource(providerSvc),
+		Config:         appCfg.VoiceInterview,
+		AllowedOrigins: appCfg.CORS.AllowedOrigins,
+		Logger:         slogger,
+	})
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
@@ -267,6 +275,7 @@ func main() {
 			ginserver.AllowCORS(appCfg.CORS.AllowedOrigins...),
 		),
 		ginserver.WithOnShutdown(func(ctx context.Context) {
+			voiceGateway.Close() // 关闭活动 WS：断开路径自动结束进行中的会话并触发评估
 			logger.Info("on shutdown: 资源清理完成")
 		}),
 	)
@@ -278,6 +287,7 @@ func main() {
 	resumeCtl.RegisterRoutes(api)
 	interviewCtl.RegisterRoutes(api)
 	voiceCtl.RegisterRoutes(api)
+	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})
 	})

@@ -227,6 +227,46 @@ func (s *Service) EndSession(ctx context.Context, sessionID int64) error {
 	return nil
 }
 
+// GetSessionEntity 建连校验用实体读取（缓存优先、DB 兜底，对齐 getSession 读路径）：
+// 不存在返回 (nil, nil)，由网关侧拒绝升级。
+func (s *Service) GetSessionEntity(ctx context.Context, sessionID int64) (*SessionEntity, error) {
+	e, err := s.getSession(ctx, sessionID)
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternalError, "查询语音面试会话失败", err)
+	}
+	return e, nil
+}
+
+// EndSessionIfInProgress 仅当会话仍在进行中才结束（WS 异常断开的自动收尾，对齐
+// Java endSessionIfInProgress L109-118：repo 直查，不存在或非 IN_PROGRESS 静默
+// 返回；否则走 endSession 全语义——COMPLETED + 评估 PENDING + 提交后投递）。
+func (s *Service) EndSessionIfInProgress(ctx context.Context, sessionID int64) error {
+	e, err := s.repo.FindSessionByID(ctx, sessionID)
+	if errors.Is(err, ErrSessionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if statusEnum(e.Status) != VoiceStatusInProgress {
+		return nil
+	}
+	s.logger.Info("WS 断开，自动结束进行中的语音面试会话", slog.Int64("sessionId", sessionID))
+
+	now := time.Now()
+	fillEndOfSession(e, now)
+	if err := s.repo.UpdateEnd(ctx, e); err != nil {
+		return apperr.Wrap(apperr.CodeInternalError, "结束语音面试会话失败", err)
+	}
+	s.invalidateSessionCache(ctx, e.ID)
+
+	s.logger.Info("语音面试会话已结束，评估已触发",
+		slog.Int64("sessionId", e.ID),
+		slog.Int("actualDuration", intValue(e.ActualDuration)))
+	s.sendEvaluateTaskAfterCommit(ctx, e.ID)
+	return nil
+}
+
 // ===== 暂停/恢复 =====
 
 // pauseGuard 仅 IN_PROGRESS 可暂停；其余 400 "会话状态为 {status}，无法暂停"

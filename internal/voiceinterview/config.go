@@ -37,9 +37,11 @@ type Config struct {
 	// 开场白（Java opening-audio-warmup-enabled 默认 false）。
 	OpeningAudioWarmupEnabled bool `config:"opening_audio_warmup_enabled" default:"false"`
 
-	// WebSocket 网关（Java：连接级 256KB 消息上限、发送装饰器 10s 写超时）。
-	WSMessageLimit int64         `config:"ws_message_limit" default:"262144"`
-	WSWriteTimeout time.Duration `config:"ws_write_timeout" default:"10s"`
+	// WebSocket 网关（Java：连接级 256KB 消息上限、发送装饰器 10s 写超时与 512KB
+	// 积压上限）。
+	WSMessageLimit    int64         `config:"ws_message_limit" default:"262144"`
+	WSWriteTimeout    time.Duration `config:"ws_write_timeout" default:"10s"`
+	WSSendBufferLimit int64         `config:"ws_send_buffer_limit" default:"524288"`
 
 	// 不活动暂停（Java 常量：30s 巡检、4:30 预警、5:00 暂停）。
 	InactivityCheckInterval time.Duration `config:"inactivity_check_interval" default:"30s"`

@@ -240,9 +240,9 @@ type ttsSessionConfig struct {
 // ttsServerEvent 服务端事件的宽松解析：只取客户端关心的字段（Java handleServerEvent
 // 同样只 switch type 并按需取 delta/error）。
 type ttsServerEvent struct {
-	Type    string          `json:"type"`
-	Delta   string          `json:"delta"` // response.audio.delta 的 base64 音频分片
-	Error   json.RawMessage `json:"error"` // error 事件负载；可能为 JSON 对象或字符串
+	Type  string          `json:"type"`
+	Delta string          `json:"delta"` // response.audio.delta 的 base64 音频分片
+	Error json.RawMessage `json:"error"` // error 事件负载；可能为 JSON 对象或字符串
 }
 
 // formatTtsServerError 按服务端错误负载生成错误消息，形状与 Java L384-397 逐字对齐：
