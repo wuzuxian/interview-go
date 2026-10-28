@@ -185,14 +185,15 @@ func (e *EvaluationEngine) EvaluateSession(ctx context.Context, completer ai.Cha
 		referenceContext = input.SkillReference
 	}
 
-	// 简历摘要与参考基线截断（对齐 UnifiedEvaluationService.evaluate）。
+	// 简历摘要与参考基线截断（对齐 UnifiedEvaluationService.evaluate；
+	// 截断按 rune 计，对齐 Java String.length() 的中文 BMP 语义）。
 	resumeContext := input.ResumeText
-	if runes, n := truncateRunes(resumeContext, e.cfg.ResumeMaxChars); n {
-		resumeContext = runes + resumeTruncatedSuffix
+	if runeLen(resumeContext) > e.cfg.ResumeMaxChars {
+		resumeContext = truncateRunes(resumeContext, e.cfg.ResumeMaxChars) + resumeTruncatedSuffix
 	}
 	referenceBaseline := strings.TrimSpace(referenceContext)
-	if runes, n := truncateRunes(referenceBaseline, e.cfg.MaxReferenceChars); n {
-		referenceBaseline = runes + referenceTruncatedSuffix
+	if runeLen(referenceBaseline) > e.cfg.MaxReferenceChars {
+		referenceBaseline = truncateRunes(referenceBaseline, e.cfg.MaxReferenceChars) + referenceTruncatedSuffix
 	}
 
 	// 分批评估 → 合并 → 二次汇总 → 构建报告。
@@ -780,12 +781,12 @@ func buildQuestionHighlights(qaRecords []qaRecord, evaluations []*questionEvalDT
 			}
 		}
 		shortQ := q.question
-		if runes, over := truncateRunes(shortQ, highlightQuestionMax); over {
-			shortQ = runes + "..."
+		if runeLen(shortQ) > highlightQuestionMax {
+			shortQ = truncateRunes(shortQ, highlightQuestionMax) + "..."
 		}
 		shortF := feedback
-		if runes, over := truncateRunes(shortF, highlightFeedbackMax); over {
-			shortF = runes + "..."
+		if runeLen(shortF) > highlightFeedbackMax {
+			shortF = truncateRunes(shortF, highlightFeedbackMax) + "..."
 		}
 		highlights = append(highlights,
 			fmt.Sprintf("- Q%d | %s | 分数:%d | 反馈:%s", q.questionIndex+1, shortQ, score, shortF))
@@ -922,8 +923,6 @@ func withQuestionReferences(report *ReportDTO, questions []QuestionDTO) {
 	}
 }
 
-// ===== 通用小工具 =====
-
 // buildQARecordsText 批内问答记录拼接（逐字格式）：
 // `问题 questionIndex=N [分类]（追问，针对 questionIndex=M）: 题干` + `回答: 内容或 (未回答)`。
 func buildQARecordsText(batch []qaRecord) string {
@@ -944,15 +943,6 @@ func buildQARecordsText(batch []qaRecord) string {
 	return sb.String()
 }
 
-// renderPrompt 顺序替换 {占位符}（等价 Spring 模板渲染；占位符名互不为前缀）。
-func renderPrompt(template string, vars map[string]string) string {
-	result := template
-	for name, value := range vars {
-		result = strings.ReplaceAll(result, "{"+name+"}", value)
-	}
-	return result
-}
-
 // intAvg 整数平均（int 截断，等价 Java (int) average()）。
 func intAvg(scores []int) int {
 	if len(scores) == 0 {
@@ -963,15 +953,4 @@ func intAvg(scores []int) int {
 		total += s
 	}
 	return total / len(scores)
-}
-
-// truncateRunes 按 rune 截断，返回（截断结果，是否超长）。
-// Java String.length()/substring 为 UTF-16 码元数，对 BMP 中文字符等价于字符数；
-// 仓库惯例按 rune 计（见 jd.go 注释）。
-func truncateRunes(s string, max int) (string, bool) {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s, false
-	}
-	return string(runes[:max]), true
 }
