@@ -53,6 +53,20 @@ const (
 	CodeResumeUploadFailed   = 2003
 	CodeResumeAnalysisFailed = 2007
 	CodeAnalysisNotFound     = 2008
+	// 面试模块 3xxx（对齐 Java ErrorCode 面试模块段）。
+	// 3001-3009 为 Java 会话段原文（含默认消息），见笔记 08 §1。
+	CodeInterviewSessionNotFound          = 3001
+	CodeInterviewSessionExpired           = 3002
+	CodeInterviewQuestionNotFound         = 3003
+	CodeInterviewAlreadyCompleted         = 3004
+	CodeInterviewEvaluationFailed         = 3005
+	CodeInterviewQuestionGenerationFailed = 3006
+	CodeInterviewNotCompleted             = 3007
+	CodeInterviewAnswerSaveFailed         = 3008
+	CodeInterviewQuestionInsufficient     = 3009
+	// Java 版查询不存在的方向复用 BAD_REQUEST，
+	// 本仓库按票面要求给 404 语义，取 3101 避让会话段。
+	CodeSkillNotFound        = 3101
 	CodeStorageUploadFailed  = 4001
 	CodeStorageDownloadFail  = 4002
 	CodeStorageDeleteFailed  = 4003
@@ -79,3 +93,18 @@ func NotFound(message string) *AppError { return New(CodeNotFound, message) }
 func Internal(message string) *AppError { return New(CodeInternalError, message) }
 
 func ResumeNotFound() *AppError { return New(CodeResumeNotFound, "简历不存在") }
+
+// SkillNotFound 面试方向不存在，消息与 Java 版 getSkill 一致。
+func SkillNotFound(skillID string) *AppError {
+	return New(CodeSkillNotFound, "未找到面试主题: "+skillID)
+}
+
+// InterviewSessionNotFound 面试会话不存在（3001 默认消息）。
+func InterviewSessionNotFound() *AppError {
+	return New(CodeInterviewSessionNotFound, "面试会话不存在")
+}
+
+// InterviewSessionNotFoundWithMessage 3001 + 自定义消息（unfinished 无记录用）。
+func InterviewSessionNotFoundWithMessage(message string) *AppError {
+	return New(CodeInterviewSessionNotFound, message)
+}

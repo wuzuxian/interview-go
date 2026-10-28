@@ -8,6 +8,7 @@ import (
 
 	"github.com/wuzuxian/interview/internal/ai"
 	"github.com/wuzuxian/interview/internal/apperr"
+	"github.com/wuzuxian/interview/internal/strutil"
 )
 
 //go:embed prompts/resume-analysis-system.st
@@ -79,7 +80,7 @@ func (g *GradingService) analyzeStrict(ctx context.Context, resumeText string) (
 	if len(resumeText) > maxGradeTextChars {
 		g.logger.Warn("简历文本过长，评分前截断",
 			slog.Int("originLen", len(resumeText)), slog.Int("cappedTo", maxGradeTextChars))
-		resumeText = truncateRunes(resumeText, maxGradeTextChars)
+		resumeText = strutil.TruncateRunes(resumeText, maxGradeTextChars)
 	}
 
 	userPrompt := strings.ReplaceAll(userPromptTemplate, "{resumeText}", resumeText)
@@ -115,13 +116,4 @@ func (g *GradingService) analyzeStrict(ctx context.Context, resumeText string) (
 		Suggestions:  out.Suggestions,
 		OriginalText: resumeText,
 	}, nil
-}
-
-// truncateRunes 按字符数截断，避免切出残缺的 UTF-8 序列。
-func truncateRunes(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n])
 }

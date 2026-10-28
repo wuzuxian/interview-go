@@ -13,6 +13,8 @@ import (
 	"gorm.io/gorm"
 
 	einoembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
+
+	"github.com/wuzuxian/interview/internal/strutil"
 )
 
 // Store pgvector 存储访问。
@@ -68,15 +70,6 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 // 向量仅用于语义检索，截断不影响召回主体内容。
 const maxEmbeddingChars = 6000
 
-// truncateRunes 按字符数截断，避免切出残缺的 UTF-8 序列。
-func truncateRunes(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n])
-}
-
 // runeCount 返回字符串的字符（rune）数。
 func runeCount(s string) int { return len([]rune(s)) }
 
@@ -90,7 +83,7 @@ func (s *Store) UpsertResumeEmbedding(ctx context.Context, resumeID int64, conte
 	if runeCount(content) > maxEmbeddingChars {
 		s.logger.Warn("向量化的简历文本过长，已截断",
 			slog.Int64("resumeId", resumeID), slog.Int("originLen", runeCount(content)))
-		content = truncateRunes(content, maxEmbeddingChars)
+		content = strutil.TruncateRunes(content, maxEmbeddingChars)
 	}
 	vectors, err := emb.EmbedStrings(ctx, []string{content})
 	if err != nil {
