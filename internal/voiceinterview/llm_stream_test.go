@@ -14,13 +14,15 @@ import (
 )
 
 // scriptedStreamModel 脚本化流式模型替身：Stream 时按序发送 tokens（可选间隔），
-// err 非 nil 时以错误收尾；block 非 nil 时发完 tokens 挂起直至关闭。
+// err 非 nil 时以错误收尾；errAfter 非 nil 时发完 tokens 再回错误（模拟流中途
+// 失败/断连，出句回调已触发过）；block 非 nil 时发完 tokens 挂起直至关闭。
 type scriptedStreamModel struct {
-	mu     sync.Mutex
-	tokens []string
-	gap    time.Duration
-	err    error
-	block  chan struct{}
+	mu       sync.Mutex
+	tokens   []string
+	gap      time.Duration
+	err      error
+	errAfter error
+	block    chan struct{}
 
 	muIn   sync.Mutex
 	inputs []*schema.Message
@@ -33,6 +35,7 @@ func (m *scriptedStreamModel) Stream(ctx context.Context, input []*schema.Messag
 
 	sr, sw := schema.Pipe[*schema.Message](0)
 	err := m.err
+	errAfter := m.errAfter
 	tokens := m.tokens
 	gap := m.gap
 	block := m.block
@@ -53,6 +56,10 @@ func (m *scriptedStreamModel) Stream(ctx context.Context, input []*schema.Messag
 			if gap > 0 {
 				time.Sleep(gap)
 			}
+		}
+		if errAfter != nil {
+			sw.Send(nil, errAfter)
+			return
 		}
 		if block != nil {
 			<-block

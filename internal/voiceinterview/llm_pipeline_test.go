@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -610,6 +611,48 @@ func TestPipelineLLM错误话术与会话不中断(t *testing.T) {
 	submitText(t, c, "第二问的回答")
 	msgs := collectUntilComplete(t, c, 5*time.Second)
 	assertSequence(t, msgs, []string{"subtitle-final", "text-final", "audio_chunk", "audio_chunk", "audio_complete"})
+}
+
+// LLM 流中途失败（分块路径、已有一句提交发射器）：error 话术下发后 Turn 提前
+// return，发射协程必须随句序通道关闭而退出——否则永久阻塞在 for range e.jobs，
+// 每遇一次流失败/断连即泄漏一个 goroutine。
+func TestPipeline流中途失败发射协程退出(t *testing.T) {
+	f := newFixture()
+	tts := newFakeTtsServer(t)
+	tts.textScripts = map[string]func(*fakeTtsServer, *websocket.Conn){
+		"第一句。": scriptSynthDone([]byte{1}),
+	}
+	models := &stubVoiceResolver{queue: []StreamChatModel{
+		&scriptedStreamModel{tokens: []string{"第一句。"}, errAfter: errString("流中途失败")},
+	}}
+	cfg := Config{
+		ChunkedAudioEnabled: true, AIQuestionMaxChars: 120,
+		LLMStreamPushInterval: 80 * time.Millisecond, LLMStreamMinCharsDelta: 12,
+		MaxConcurrentTTSPerSession: 3, TTSConnectTimeout: 300 * time.Millisecond,
+		TTSTimeout: 400 * time.Millisecond, TTSFullTimeout: 800 * time.Millisecond,
+	}
+	pipe := NewTurnPipeline(TurnPipelineDeps{
+		Svc: f.svc, Store: f.store, Models: models,
+		Settings: voiceConfigStub{tts: TtsSettings{URL: tts.URL(), Model: "m", APIKey: "k", Mode: "commit"}},
+		TTS:      NewTtsClient(cfg, discardLogger()),
+		Prompts:  NewPromptService(interview.NewPromptSanitizer(nil), stubSkillPersona{persona: &voicePersona}, discardLogger()),
+		Cfg:      cfg, Logger: discardLogger(),
+	})
+	id := f.store.addSession(voiceTurnSession())
+
+	before := runtime.NumGoroutine()
+	speaker := newRecordingSpeaker()
+	pipe.Turn(context.Background(), TurnInput{SessionID: id, UserText: "回答", Speaker: speaker})
+
+	// 契约（票 06）：LLM 异常映射话术下发 error，会话不中断。
+	got := speaker.rec.list()
+	if len(got) == 0 || !strings.HasPrefix(got[0], "send:error:") {
+		t.Fatalf("流失败应下发 error 话术: %v", got)
+	}
+	// 发射协程已退出（含消费已提交句子的合成协程）。
+	waitForCond(t, 3*time.Second, "发射协程已退出", func() bool {
+		return runtime.NumGoroutine() <= before
+	})
 }
 
 // AI 说话期间回声冷却：回合执行中上行音频被丢弃（不转发 ASR），回合结束后恢复。

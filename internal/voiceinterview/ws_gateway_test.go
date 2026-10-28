@@ -912,3 +912,114 @@ func TestGateway优雅关闭自动结束会话(t *testing.T) {
 		return len(gf.f.store.updateEnd) == 1
 	})
 }
+
+// ===== 同会话重复建连（顶替注册）=====
+
+// 同会话第二次建连顶替第一次：旧连接被作废关闭，其断开清理不做会话级收尾
+// （会话保持进行中），新连接照常触发模型回合（Java 直接覆盖映射 + 顶替裁决）。
+func TestGateway同会话重复建连旧连接被顶替(t *testing.T) {
+	gf := newGatewayFixture(t, nil)
+	id := gf.addMidwaySession(time.Hour)
+	a := gf.mustWSClient(t, id)
+	a.drainEstablish(t)
+
+	b := gf.mustWSClient(t, id)
+	b.drainEstablish(t)
+
+	// 旧连接被作废：常驻读协程随即退出。
+	waitForCond(t, 3*time.Second, "旧连接已关闭", func() bool {
+		select {
+		case <-a.closed:
+			return true
+		default:
+			return false
+		}
+	})
+	// 旧连接的断开清理跳过会话级收尾：会话保持进行中。
+	if e := gf.f.store.sessions[id]; e == nil || e.Status == nil || *e.Status != VoiceStatusInProgress {
+		t.Fatalf("顶替不应结束会话: %+v", gf.f.store.sessions[id])
+	}
+	// 新连接照常工作：submit 触发模型回合。
+	sendWSMsg(t, b.conn, map[string]any{
+		"type": "control", "action": "submit", "data": map[string]any{"text": "新连接的回答"},
+	})
+	waitForCond(t, 3*time.Second, "新连接回合已触发", func() bool {
+		for _, in := range gf.turn.calls() {
+			if in.UserText == "新连接的回答" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// register 顺序顶替链（确定性契约）：每次注册返回被覆盖的旧连接、恰好一次——
+// establish 据此对被顶替者 abandon；返回缺失或重复即出现不受顶替保护的孤儿连接。
+func TestGatewayRegister顺序顶替链(t *testing.T) {
+	g := &Gateway{live: map[string]*wsSession{}}
+	a := &wsSession{gw: g, key: "42", id: 42}
+	b := &wsSession{gw: g, key: "42", id: 42}
+	c := &wsSession{gw: g, key: "42", id: 42}
+
+	if prev := g.register(a); prev != nil {
+		t.Fatalf("空表注册不应有 prev: %v", prev)
+	}
+	if prev := g.register(b); prev != a {
+		t.Fatalf("第二次注册应返回 a 为 prev: %v", prev)
+	}
+	if prev := g.register(c); prev != b {
+		t.Fatalf("第三次注册应返回 b 为 prev: %v", prev)
+	}
+	g.mu.Lock()
+	live := g.live["42"]
+	g.mu.Unlock()
+	if live != c {
+		t.Fatalf("当前连接应为最后注册者: %v", live)
+	}
+}
+
+// register 并发注册的不变量：同会话并发建连时读取与覆盖写在同一锁内完成——任一
+// 被覆盖出 live 的连接必然成为某次调用的返回 prev（调用方据此 abandon），不存在
+// 未被顶替的孤儿连接可与当前连接并行执行回合。（原缺陷的两阶段读写在锁外窗口
+// 极窄，本测试在修复前后均可能通过，作为竞争不变量的常驻演练；原子性由
+// register 单锁段构造保证，并以 go test -race 常规运行兜底。）
+func TestGatewayRegister并发覆盖必顶替(t *testing.T) {
+	const n = 12
+	for round := 0; round < 20; round++ {
+		g := &Gateway{live: map[string]*wsSession{}}
+		sessions := make([]*wsSession, n)
+		for i := range sessions {
+			sessions[i] = &wsSession{gw: g, key: "42", id: 42}
+		}
+		var mu sync.Mutex
+		prevTimes := map[*wsSession]int{}
+		var wg sync.WaitGroup
+		for _, s := range sessions {
+			wg.Add(1)
+			go func(s *wsSession) {
+				defer wg.Done()
+				if prev := g.register(s); prev != nil {
+					mu.Lock()
+					prevTimes[prev]++
+					mu.Unlock()
+				}
+			}(s)
+		}
+		wg.Wait()
+
+		g.mu.Lock()
+		live := g.live["42"]
+		g.mu.Unlock()
+		if live == nil {
+			t.Fatalf("第 %d 轮: 并发注册后应有唯一存活连接", round)
+		}
+		for _, s := range sessions {
+			if s == live {
+				continue
+			}
+			if prevTimes[s] != 1 {
+				t.Fatalf("第 %d 轮: 被覆盖的连接必须恰好成为一次 prev（顶替 abandon 的依据），实际 %d 次", round, prevTimes[s])
+			}
+		}
+	}
+}

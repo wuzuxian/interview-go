@@ -43,6 +43,9 @@ type fakeVoiceEvalStore struct {
 	//（模拟"跳过检查后、业务执行前会话被删除"的窗口）。
 	findFailAfter int
 	findCalls     int
+	// findErr 非 nil 时 FindSessionByID 恒返回该错误（模拟 DB 故障等非「会话不存在」
+	// 的读错误；区别于 findFailAfter 的 ErrSessionNotFound）。
+	findErr error
 }
 
 func newFakeVoiceEvalStore(rec *svcRecorder) *fakeVoiceEvalStore {
@@ -70,6 +73,9 @@ func (s *fakeVoiceEvalStore) FindSessionByID(ctx context.Context, sessionID int6
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.findCalls++
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
 	if s.findFailAfter > 0 && s.findCalls > s.findFailAfter {
 		return nil, ErrSessionNotFound
 	}

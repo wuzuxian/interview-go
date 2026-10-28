@@ -152,6 +152,11 @@ func (p *TurnPipeline) Turn(ctx context.Context, in TurnInput) {
 			SessionID: in.SessionID, Ctx: ctx, Speaker: in.Speaker, TTS: p.tts, Settings: ttsSettings,
 			Timeout: ttsTimeout, MaxConcurrency: maxConcurrency, Logger: p.logger,
 		})
+		// 之后任何提前 return（streamSentences 失败 / 流式期间断连）都必须关闭
+		// 句序通道：否则发射协程永久阻塞在 for range e.jobs，每遇一次 LLM 失败/
+		// 断连即泄漏一个 goroutine。正常路径由 deliverChunked 先行 Finish
+		//（stopOnce 幂等，重复关闭为空操作）。
+		defer emitter.Finish()
 	}
 
 	onSentence := func(sentence string) {

@@ -186,18 +186,14 @@ func (g *Gateway) establish(conn *websocket.Conn, key string, sessionID int64) {
 			logger:       g.logger,
 		}),
 	}
-	g.mu.Lock()
-	if prev := g.live[key]; prev != nil && prev != s {
+	// 检查与覆盖写在同一锁内完成（register）：并发建连时后注册者必然拿到先注册
+	// 者为 prev 并在锁外将其 abandon——不会出现被覆盖出 live 却未作废、可绕过
+	// 实例比对与顶替保护与当前连接并行执行回合的孤儿连接。
+	if prev := g.register(s); prev != nil && prev != s {
 		// 同会话重复建连：新连接顶替注册，旧连接仅作废自身（不触发会话级收尾，
 		// 避免旧连接的断开清理误停新连接的 ASR/误结束会话；Java 此处直接覆盖映射）。
-		g.mu.Unlock()
 		prev.abandon()
-	} else {
-		g.mu.Unlock()
 	}
-	g.mu.Lock()
-	g.live[key] = s
-	g.mu.Unlock()
 
 	// 上行单条消息上限 256KB（Java setTextMessageSizeLimit/setBinaryMessageSizeLimit）。
 	conn.SetReadLimit(g.cfg.WSMessageLimit)
@@ -228,6 +224,16 @@ func (g *Gateway) establish(conn *websocket.Conn, key string, sessionID int64) {
 	}
 
 	g.readPump(s)
+}
+
+// register 原子注册连接为会话当前连接：读取旧连接与覆盖写在同一锁内完成，返回
+// 被顶替的旧连接（无则 nil），由调用方在锁外 abandon。
+func (g *Gateway) register(s *wsSession) *wsSession {
+	g.mu.Lock()
+	prev := g.live[s.key]
+	g.live[s.key] = s
+	g.mu.Unlock()
+	return prev
 }
 
 // triggerOpeningQuestion 建连自动开场（Java triggerOpeningQuestionIfNeeded

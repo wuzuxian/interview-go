@@ -109,6 +109,38 @@ func TestVoiceConsumerSessionDeletedMidflight(t *testing.T) {
 	}
 }
 
+// 会话查询的非「不存在」错误（DB 故障等）不跳过：放行走 processBusiness 报错
+// 重投（Java findById 异常传入 processMessage catch 的重试路径），而非 ACK 丢弃。
+func TestVoiceConsumer查询错误走重试而非跳过(t *testing.T) {
+	f := newConsumerFixture()
+	f.store.addSession(evalChainSession(5, evalStatusPtr(VoiceEvaluatePending)))
+	f.store.findErr = errEvalBoom
+
+	f.consumer.handleMessage(context.Background(), "1-1", voiceEvalMessage(5, 0))
+
+	events := f.rec.list()
+	if f.stream.addCount() != 1 {
+		t.Fatalf("查询错误应重投一条消息, got %d 条", f.stream.addCount())
+	}
+	added := f.stream.addAt(0)
+	if got := added[VoiceEvalFieldRetryCount]; got != "1" {
+		t.Errorf("重投消息 retryCount = %v, want \"1\"", got)
+	}
+	if got := added[VoiceEvalFieldSessionID]; got != "5" {
+		t.Errorf("重投消息 voiceSessionId = %v, want \"5\"", got)
+	}
+	if !containsEvent(events, "ack") {
+		t.Error("原消息重投后应 ACK")
+	}
+	if f.runner.calls != 0 {
+		t.Errorf("查询错误不应进入评估引擎, got %d 次", f.runner.calls)
+	}
+	// 状态未置 FAILED（未达重试上限，Java retryCount 语义）。
+	if containsEvent(events, "update-eval:FAILED") {
+		t.Error("未达上限不应置 FAILED")
+	}
+}
+
 func TestVoiceConsumerRetryThenFailedAfterLimit(t *testing.T) {
 	f := newConsumerFixture()
 	f.store.addSession(evalChainSession(5, evalStatusPtr(VoiceEvaluateProcess)))

@@ -248,13 +248,18 @@ func (c *VoiceEvaluateConsumer) handleMessage(ctx context.Context, messageID str
 	c.logger.Info("语音面试评估 task completed", slog.Int64("voiceSessionId", payload.SessionID))
 }
 
-// shouldSkip 幂等守卫（Java VoiceEvaluateStreamConsumer.shouldSkip L82-86 逐字）：
-// 会话不存在（orElse(true)）或评估已完成时跳过；PROCESSING/FAILED/PENDING 不跳过
-// （FAILED 的重试消息依赖此语义再次进入评估）。
+// shouldSkip 幂等守卫（Java VoiceEvaluateStreamConsumer.shouldSkip L82-86）：
+// 会话不存在（Optional 为空 → orElse(true)）或评估已完成时跳过；PROCESSING/FAILED/
+// PENDING 不跳过（FAILED 的重试消息依赖此语义再次进入评估）。其余查询错误（DB
+// 故障等）不跳过：Java findById 抛出的异常会传出入 processMessage 的 catch 走
+// 重投路径，这里放行交给 processBusiness 以同一错误收尾重投，语义一致。
 func (c *VoiceEvaluateConsumer) shouldSkip(ctx context.Context, payload voiceEvalPayload) bool {
 	entity, err := c.store.FindSessionByID(ctx, payload.SessionID)
 	if err != nil {
-		return true
+		if errors.Is(err, ErrSessionNotFound) {
+			return true
+		}
+		return false
 	}
 	return entity.EvaluateStatus != nil && *entity.EvaluateStatus == VoiceEvaluateCompleted
 }
