@@ -70,6 +70,10 @@ const (
 // sendAudio 就绪等待（Java QwenAsrService.sendAudio 的 awaitReady(1200) 硬编码）。
 const asrSendReadyWait = 1200 * time.Millisecond
 
+// asrStillNotReadyPrefix 就绪监督重试耗尽的错误前缀（网关据此映射 Java
+// checkAsrReadyOrRetry L460 的「语音识别连接准备超时」话术）。
+const asrStillNotReadyPrefix = "ASR still not ready"
+
 // SendAudio 错误语义（Java 以消息子串分类，Go 以哨兵 errors.Is 分类；消息文本保留
 // Java 原文以便对照）：未就绪静默丢块，无会话/追加失败重启后重发（Handler
 // isAsrNotReady / shouldRecoverAsrConnection）。
@@ -339,7 +343,7 @@ func (c *AsrClient) superviseReady(sessionID string, stop <-chan struct{}, cbs A
 		if attempt >= c.cfg.AsrReadyRetries {
 			c.logger.Warn("ASR 重试后仍未就绪",
 				slog.String("session_id", sessionID), slog.Int("retries", attempt))
-			cbs.OnError(sessionID, fmt.Errorf("ASR still not ready after %d retries", attempt))
+			cbs.OnError(sessionID, fmt.Errorf("%s after %d retries", asrStillNotReadyPrefix, attempt))
 			return
 		}
 		c.logger.Warn("ASR 未就绪，自动重连",
