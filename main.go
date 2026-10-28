@@ -285,6 +285,7 @@ func main() {
 		AllowedOrigins: appCfg.CORS.AllowedOrigins,
 		Logger:         slogger,
 	})
+	go voiceGateway.WarmupOpeningAudio(ctx) // 开场音频预热（默认关，开启时异步不阻塞启动）
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

@@ -55,5 +55,9 @@ type Config struct {
 	EvaluatePendingRequeueAfter time.Duration `config:"evaluate_pending_requeue_after" default:"3m"`
 	EvaluateProcessingFailAfter time.Duration `config:"evaluate_processing_fail_after" default:"30m"`
 
-	// 后续票追加字段（票 05：Phase 阶段判据；票 07：ContextCompression 上下文压缩）。
+	// 阶段推进判据（票 05；Java application.yml app.voice-interview.phase.* 段，
+	// 四阶段默认值逐字见 PhaseConfig 注释；类型与判据纯函数在 phase.go）。
+	Phase PhaseConfig `config:"phase"`
+
+	// 后续票追加字段（票 07：ContextCompression 上下文压缩）。
 }

@@ -26,15 +26,18 @@ import (
 
 // ===== 夹具 =====
 
-// staticConfigSource 静态语音配置源（测试注入，URL 指向进程内假 ASR 服务端）。
-type staticConfigSource struct{ asr AsrSettings }
+// staticConfigSource 静态语音配置源（测试注入，URL 指向进程内假 ASR/TTS 服务端）。
+type staticConfigSource struct {
+	asr AsrSettings
+	tts TtsSettings
+}
 
 func (s staticConfigSource) VoiceAsrSettings(context.Context) (AsrSettings, error) {
 	return s.asr, nil
 }
 
 func (s staticConfigSource) VoiceTtsSettings(context.Context) (TtsSettings, error) {
-	return TtsSettings{}, nil
+	return s.tts, nil
 }
 
 // turnRecorder 回合挂钩记录器：block 非 nil 时挂起 hook 模拟模型回合执行中。
@@ -73,18 +76,22 @@ func (r *turnRecorder) release() {
 type gatewayFixture struct {
 	f       svcFixture
 	asr     *fakeAsrServer
+	ttsSrv  *fakeTtsServer
 	turn    *turnRecorder
 	gw      *Gateway
 	srv     *httptest.Server
 	origins []string
 }
 
-// newGatewayFixture 组装真网关 + 假 ASR + 内存存储；mutate 可改配置与白名单。
+// newGatewayFixture 组装真网关 + 假 ASR/TTS + 内存存储；mutate 可改配置与白名单。
+// 假 TTS 默认脚本为一段两字节 PCM 的正常合成（开场白等合成都走真协议客户端）。
 func newGatewayFixture(t *testing.T, mutate func(cfg *Config, origins *[]string)) *gatewayFixture {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	f := newFixture()
 	asr := newFakeAsrServer(t)
+	ttsSrv := newFakeTtsServer(t)
+	ttsSrv.scripts = []func(*fakeTtsServer, *websocket.Conn){scriptSynthDone([]byte{0x01, 0x02})}
 	turn := &turnRecorder{}
 	origins := []string{"https://front.test"}
 	cfg := Config{
@@ -95,6 +102,9 @@ func newGatewayFixture(t *testing.T, mutate func(cfg *Config, origins *[]string)
 		AsrResendMaxAttempts:   15,
 		AsrResendInterval:      10 * time.Millisecond,
 		EchoCooldown:           60 * time.Millisecond,
+		TTSConnectTimeout:      time.Second,
+		TTSTimeout:             2 * time.Second,
+		TTSFullTimeout:         3 * time.Second,
 		WSMessageLimit:         262144,
 		WSWriteTimeout:         2 * time.Second,
 		WSSendBufferLimit:      524288,
@@ -104,11 +114,18 @@ func newGatewayFixture(t *testing.T, mutate func(cfg *Config, origins *[]string)
 	}
 	gw := NewGateway(GatewayDeps{
 		Service: f.svc,
-		Settings: staticConfigSource{asr: AsrSettings{
-			URL: asr.wsURL(), Model: "qwen3-asr-flash-realtime", APIKey: "sk-test",
-			Format: "pcm", SampleRate: 16000, Language: "zh", EnableTurnDetection: true,
-			TurnDetectionType: "server_vad", TurnDetectionSilenceDurationMs: 2000,
-		}},
+		Settings: staticConfigSource{
+			asr: AsrSettings{
+				URL: asr.wsURL(), Model: "qwen3-asr-flash-realtime", APIKey: "sk-test",
+				Format: "pcm", SampleRate: 16000, Language: "zh", EnableTurnDetection: true,
+				TurnDetectionType: "server_vad", TurnDetectionSilenceDurationMs: 2000,
+			},
+			tts: TtsSettings{
+				URL: ttsSrv.URL(), Model: "qwen3-tts-flash-realtime", APIKey: "sk-test",
+				Voice: "Cherry", Format: "pcm", SampleRate: 24000, Mode: "commit",
+				LanguageType: "Chinese", SpeechRate: 1, Volume: 60,
+			},
+		},
 		Config:         cfg,
 		AllowedOrigins: origins,
 		Turn:           turn.hook,
@@ -118,7 +135,15 @@ func newGatewayFixture(t *testing.T, mutate func(cfg *Config, origins *[]string)
 	gw.RegisterRoutes(r.Group("/ws"))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	return &gatewayFixture{f: f, asr: asr, turn: turn, gw: gw, srv: srv, origins: origins}
+	return &gatewayFixture{f: f, asr: asr, ttsSrv: ttsSrv, turn: turn, gw: gw, srv: srv, origins: origins}
+}
+
+// addMidwaySession 添加一个"对话进行中"的会话（含一条历史消息）：用于与开场白
+// 无关的管道测试，抑制建连自动开场对消息流的干扰。
+func (gf *gatewayFixture) addMidwaySession(startAgo time.Duration) int64 {
+	id := gf.f.store.addSession(inProgressSession(startAgo))
+	gf.f.store.setDialogues(id, []MessageEntity{voiceMsg(id, 1, stringPtr("此前的问题"), nil)})
+	return id
 }
 
 // dialWS 建立语音 WS 连接（非 101 升级时返回响应供状态码断言）。
@@ -302,7 +327,7 @@ func containsStr(list []string, s string) bool {
 // 建连校验会话存在与 IN_PROGRESS；welcome 与 asr_ready 控制消息形状逐字。
 func TestGateway建连下发welcome与asr_ready(t *testing.T) {
 	gf := newGatewayFixture(t, nil)
-	id := gf.f.store.addSession(inProgressSession(time.Hour))
+	id := gf.addMidwaySession(time.Hour)
 	c := gf.mustWSClient(t, id)
 
 	actions := c.drainEstablish(t)
@@ -614,7 +639,7 @@ func TestGateway回声冷却丢弃音频(t *testing.T) {
 func TestGateway处理中丢弃迟到识别结果(t *testing.T) {
 	gf := newGatewayFixture(t, nil)
 	gf.turn.block = make(chan struct{})
-	id := gf.f.store.addSession(inProgressSession(time.Hour))
+	id := gf.addMidwaySession(time.Hour)
 	c := gf.mustWSClient(t, id)
 	c.drainEstablish(t)
 
@@ -851,7 +876,7 @@ func TestGateway上行超过256KB断连并自动结束(t *testing.T) {
 // 未知上行类型仅告警忽略，连接不断（Java default 分支 log.warn）。
 func TestGateway未知上行类型忽略(t *testing.T) {
 	gf := newGatewayFixture(t, nil)
-	id := gf.f.store.addSession(inProgressSession(time.Hour))
+	id := gf.addMidwaySession(time.Hour)
 	c := gf.mustWSClient(t, id)
 	c.drainEstablish(t)
 
