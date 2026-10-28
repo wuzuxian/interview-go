@@ -449,6 +449,9 @@ func (sm *smoke) stepExportPDF(ctx context.Context) error {
 		return err
 	}
 	path := filepath.Join(sm.opts.outDir, "smoke-report_"+sm.sessionID+".pdf")
+	if err := os.MkdirAll(sm.opts.outDir, 0o755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %v", err)
+	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		return fmt.Errorf("保存 PDF 失败: %v", err)
 	}
