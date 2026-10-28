@@ -34,6 +34,9 @@ type fakeTtsServer struct {
 	frames []map[string]any
 	// scripts 每个连接 commit 后的脚本（按连接序；不足时最后一个复用）。
 	scripts []func(fs *fakeTtsServer, conn *websocket.Conn)
+	// textScripts 按本次连接 append 的文本取脚本（票 06 管道测试用：句文本 → 脚本，
+	// 免除并发建连的连接序不确定性；命中优先于 scripts，未命中回落连接序）。
+	textScripts map[string]func(fs *fakeTtsServer, conn *websocket.Conn)
 }
 
 // newFakeTtsServer 启动假服务端；调用方用 scripts 字段按连接注册 commit 后脚本。
@@ -65,6 +68,9 @@ func (f *fakeTtsServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	f.authHeaders = append(f.authHeaders, r.Header.Get("Authorization"))
 	f.mu.Unlock()
 
+	// 本连接累计 append 的文本（textScripts 键）。
+	var localText strings.Builder
+
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -85,9 +91,16 @@ func (f *fakeTtsServer) handleWS(w http.ResponseWriter, r *http.Request) {
 				"type":     "session.updated",
 				"session":  map[string]any{"id": "sess_fake_1"},
 			})
+		case "input_text_buffer.append":
+			if text, _ := frame["text"].(string); text != "" {
+				localText.WriteString(text)
+			}
 		case "input_text_buffer.commit":
 			f.mu.Lock()
-			script := f.scripts[min(connIndex, len(f.scripts)-1)]
+			script := f.textScripts[localText.String()]
+			if script == nil && len(f.scripts) > 0 {
+				script = f.scripts[min(connIndex, len(f.scripts)-1)]
+			}
 			f.mu.Unlock()
 			if script != nil {
 				script(f, conn)

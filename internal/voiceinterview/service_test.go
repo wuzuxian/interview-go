@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,6 +62,7 @@ type fakeStore struct {
 	sessions     map[int64]*SessionEntity
 	nextID       int64
 	dialogues    map[int64][]MessageEntity
+	msgNextID    int64
 	findErr      error
 	endErr       error
 	evalUpdErr   error
@@ -252,6 +254,63 @@ func (s *fakeStore) setDialogues(sessionID int64, msgs []MessageEntity) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dialogues[sessionID] = msgs
+}
+
+// ===== fakeStore 的票 06 扩展（SessionStore 新增回合落库三方法）=====
+
+// SaveDialogueMessage 插入一条 DIALOGUE 消息（镜像 Java messageRepository.save：
+// ID 由存储分配）。
+func (s *fakeStore) SaveDialogueMessage(ctx context.Context, e *MessageEntity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.add("save-dialogue")
+	s.msgNextID++
+	e.ID = s.msgNextID
+	now := time.Now()
+	if e.CreatedAt == nil {
+		e.CreatedAt = &now
+	}
+	s.dialogues[e.SessionID] = append(s.dialogues[e.SessionID], *e)
+	return nil
+}
+
+// FillLatestUnansweredQuestion 最近一条「问题已问、答案未填」的消息回填用户答案
+// （Java findFirstBySessionIdAndUserRecognizedTextIsNullAndAiGeneratedTextIsNotNull
+// OrderBySequenceNumDesc + save 语义）。
+func (s *fakeStore) FillLatestUnansweredQuestion(ctx context.Context, sessionID int64, userText string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := s.dialogues[sessionID]
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].UserRecognizedText == nil && rows[i].AiGeneratedText != nil {
+			rows[i].UserRecognizedText = stringPtr(userText)
+			s.dialogues[sessionID] = rows
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// FindRecentDialogueMessages 最近 limit 条非 SUMMARY 消息升序返回
+// （生产 repo 为 ORDER BY sequence_num DESC LIMIT 后反转）。
+func (s *fakeStore) FindRecentDialogueMessages(ctx context.Context, sessionID int64, limit int) ([]MessageEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := append([]MessageEntity(nil), s.dialogues[sessionID]...)
+	seqOf := func(m MessageEntity) int {
+		if m.SequenceNum == nil {
+			return 0
+		}
+		return *m.SequenceNum
+	}
+	sort.Slice(rows, func(i, j int) bool { return seqOf(rows[i]) > seqOf(rows[j]) })
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	return rows, nil
 }
 
 // ===== 替身：会话缓存 =====
