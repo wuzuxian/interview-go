@@ -6,7 +6,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `GET /api/interview/skills` 返回 10 个预设方向，字段与 Java 版一致（id/name/description/categories/isPreset/display）
 - [ ] 分类含 key、label、priority（ALWAYS_ONE/CORE/NORMAL）、ref、shared
