@@ -184,13 +184,14 @@ func main() {
 	providerCtl := llmprovider.NewController(providerSvc, rl)
 	resumeCtl := resume.NewController(uploader, deleter, history, storeSvc, rl)
 
-	// 面试模块：启动时解析嵌入的 skills 资源，构建方向注册表。
-	interviewSvc, err := interview.NewService(slogger)
+	// 面试模块：启动时解析嵌入的 skills 资源，构建方向注册表；
+	// LLM 调用经 ModelResolver 接缝由 *aibridge.Bridge 注入（spec 决策 3，唯一新增接缝）。
+	interviewSvc, err := interview.NewService(bridge, invoker, slogger)
 	if err != nil {
 		logger.Error("初始化面试 Skill 注册表失败", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	interviewCtl := interview.NewController(interviewSvc)
+	interviewCtl := interview.NewController(interviewSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

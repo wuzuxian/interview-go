@@ -346,6 +346,45 @@ func (r *Registry) LocateReference(fsys fs.FS, skillID, ref string, shared bool)
 	return "", false
 }
 
+// ReferenceFileList 生成 JD 解析 system prompt 的参考文件清单 Markdown 表格
+// （对齐 Java buildReferenceFileList）：按 skillID 升序遍历全部预设方向，
+// 有 ref 的分类生成表格行并按文件名首见去重（displayName 缺失回落 front matter name）；
+// 无任何可用文件时返回占位文案。
+func (r *Registry) ReferenceFileList() string {
+	seen := map[string]bool{}
+	var rows []string
+	for _, id := range r.SkillIDs() {
+		def := r.byID[id]
+		skillName := def.displayName
+		if skillName == "" {
+			skillName = def.name
+		}
+		for _, cat := range def.categories {
+			if cat.Ref == nil || *cat.Ref == "" || seen[*cat.Ref] {
+				continue
+			}
+			seen[*cat.Ref] = true
+			scope := "skill-local"
+			if cat.Shared {
+				scope = "shared"
+			}
+			rows = append(rows, "| "+*cat.Ref+" | "+scope+" | "+skillName+" | "+cat.Label+" |\n")
+		}
+	}
+
+	if len(rows) == 0 {
+		return "（无可用参考文件）"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("| 文件名 | 范围 | 来源 Skill | 覆盖内容 |\n")
+	sb.WriteString("|--------|------|-------------|----------|\n")
+	for _, row := range rows {
+		sb.WriteString(row)
+	}
+	return sb.String()
+}
+
 // isSafeReferencePath 对齐 Java 同名方法：拒绝路径穿越、绝对路径与非法字符。
 func isSafeReferencePath(ref string) bool {
 	if ref == "" ||

@@ -3,20 +3,31 @@ package interview
 import (
 	"io/fs"
 	"log/slog"
+
+	"github.com/wuzuxian/interview/internal/ai"
 )
 
 // Service Skill 子系统服务：启动时解析嵌入资源构建方向注册表，之后只读。
-// 对应 Java 版 InterviewSkillService 的资源加载与查询部分
-// （JD 解析在票 02，参考内容注入在票 07）。
+// 对应 Java 版 InterviewSkillService：资源加载与查询（票 01）、JD 解析（票 02）、
+// 参考内容注入（票 07）。
 type Service struct {
 	reg    *Registry
 	fsys   fs.FS
 	logger *slog.Logger
+
+	// LLM 接缝（spec 决策 3：本模块唯一新增接缝）与结构化输出器。
+	models    ModelResolver
+	invoker   *ai.StructuredInvoker
+	sanitizer *PromptSanitizer
+
+	// referenceFileList JD 解析 system prompt 的参考文件清单，启动时构建一次（资源只读）。
+	referenceFileList string
 }
 
 // NewService 从嵌入的 skills 资源构建服务（对齐 Java @PostConstruct loadPresetSkills 的启动语义）。
 // 注册表构建失败（front matter 缺失、YAML 非法）返回错误，由启动方决定退出。
-func NewService(logger *slog.Logger) (*Service, error) {
+// models 为本模块唯一的 LLM 接缝，由 main 用 *aibridge.Bridge 注入。
+func NewService(models ModelResolver, invoker *ai.StructuredInvoker, logger *slog.Logger) (*Service, error) {
 	fsys := EmbeddedSkills()
 	reg, skipped, err := LoadRegistry(fsys)
 	if err != nil {
@@ -28,7 +39,15 @@ func NewService(logger *slog.Logger) (*Service, error) {
 	logger.Info("预设 Skill 注册表已加载",
 		slog.Int("count", len(reg.SkillIDs())),
 		slog.Int("skipped", len(skipped)))
-	return &Service{reg: reg, fsys: fsys, logger: logger}, nil
+	return &Service{
+		reg:               reg,
+		fsys:              fsys,
+		logger:            logger,
+		models:            models,
+		invoker:           invoker,
+		sanitizer:         NewPromptSanitizer(logger),
+		referenceFileList: reg.ReferenceFileList(),
+	}, nil
 }
 
 // ListSkills GET /api/interview/skills：全部预设方向（按 ID 升序）。
