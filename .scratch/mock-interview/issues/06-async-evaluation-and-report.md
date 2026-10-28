@@ -6,7 +6,7 @@
 
 **Blocked by:** 05（使用评估引擎）、04（交卷触发点）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 末题提交/交卷后 evaluateStatus 经 PENDING → PROCESSING → COMPLETED，场次最终转 EVALUATED
 - [ ] 报告 DTO 字段与 Java 契约逐字一致（总分/分类得分/逐题/优势/改进/参考答案）

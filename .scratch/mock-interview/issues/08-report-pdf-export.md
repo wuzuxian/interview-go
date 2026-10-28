@@ -6,7 +6,7 @@
 
 **Blocked by:** 06（报告数据就绪）
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] 下载得到合法 PDF，中文渲染正常
 - [ ] 四类章节内容齐全：总评、分类得分、逐题问答与反馈、参考答案与要点
