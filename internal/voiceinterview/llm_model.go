@@ -21,3 +21,15 @@ type VoiceModelResolver interface {
 	// VoiceStreamModelFor 解析失败（Provider 不存在/禁用等）透传设置模块业务错误。
 	VoiceStreamModelFor(ctx context.Context, providerID string) (StreamChatModel, error)
 }
+
+// PlainChatCompleter 非流式普通对话模型（ai.ChatCompleter 别名；上下文摘要专用）。
+type PlainChatCompleter = ai.ChatCompleter
+
+// VoicePlainModelResolver 按场次 llmProvider 解析非流式普通模型（上下文摘要专用：
+// 无工具、无对话记忆注入，对齐 Java LlmProviderRegistry.getPlainChatClient(llmProvider)——
+// 摘要是纯文本压缩，不混入面试素材工具，也不重新注入完整历史抵消压缩收益）。
+// 生产实现同为 *aibridge.Bridge（Generate 直调，与流式共用注册表构建）。
+type VoicePlainModelResolver interface {
+	// VoicePlainCompleterFor 解析失败（Provider 不存在/禁用等）透传设置模块业务错误。
+	VoicePlainCompleterFor(ctx context.Context, providerID string) (PlainChatCompleter, error)
+}

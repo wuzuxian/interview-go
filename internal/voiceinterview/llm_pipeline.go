@@ -41,8 +41,11 @@ type TurnPipelineDeps struct {
 	TTS      *TtsClient         // TTS 协议客户端（无接缝：URL 指向假服务端即打真协议）
 	Prompts  *PromptService     // prompt 组装
 	Resumes  ResumeTextSource   // 简历文本；可 nil（跳过简历注入）
-	Cfg      Config
-	Logger   *slog.Logger
+	// History 上下文压缩加载器（票 07；生产必注入，nil 时回退票 06 固定窗口读取，
+	// 仅供测试零值场景）。
+	History *HistoryLoader
+	Cfg     Config
+	Logger  *slog.Logger
 }
 
 // TurnPipeline 模型回合管道（TurnHook 的生产实现）。
@@ -54,6 +57,7 @@ type TurnPipeline struct {
 	tts      *TtsClient
 	prompts  *PromptService
 	resumes  ResumeTextSource
+	history  *HistoryLoader
 	cfg      Config
 	logger   *slog.Logger
 }
@@ -65,7 +69,7 @@ func NewTurnPipeline(deps TurnPipelineDeps) *TurnPipeline {
 	}
 	return &TurnPipeline{
 		svc: deps.Svc, store: deps.Store, models: deps.Models, settings: deps.Settings,
-		tts: deps.TTS, prompts: deps.Prompts, resumes: deps.Resumes,
+		tts: deps.TTS, prompts: deps.Prompts, resumes: deps.Resumes, history: deps.History,
 		cfg: deps.Cfg, logger: deps.Logger,
 	}
 }
@@ -118,7 +122,7 @@ func (p *TurnPipeline) Turn(ctx context.Context, in TurnInput) {
 		return
 	}
 
-	history := p.loadHistory(ctx, in.SessionID)
+	history := p.loadHistory(ctx, in.SessionID, entity)
 	systemPrompt := p.prompts.SystemPrompt(valueOfVoice(entity.SkillID), p.resumeText(ctx, entity))
 	userPrompt := p.prompts.UserPrompt(in.UserText, history)
 
@@ -305,9 +309,13 @@ func (p *TurnPipeline) resumeText(ctx context.Context, entity *SessionEntity) st
 	return *r.ResumeText
 }
 
-// loadHistory 最近窗口历史（Java getHistory L1233-1243：加载失败降级空历史，
-// 不中断回合）。
-func (p *TurnPipeline) loadHistory(ctx context.Context, sessionID int64) []string {
+// loadHistory 历史装载（Java Handler getHistory L1231-1243：经 VoiceHistoryLoader
+// 有界压缩装配，loader 内部已含降级链——有界失败→最近窗口→空列表，回合不中断）。
+// 无压缩加载器时回退票 06 的固定窗口读取。
+func (p *TurnPipeline) loadHistory(ctx context.Context, sessionID int64, entity *SessionEntity) []string {
+	if p.history != nil {
+		return p.history.LoadHistory(ctx, sessionID, valueOfVoice(entity.LLMProvider))
+	}
 	msgs, err := p.store.FindRecentDialogueMessages(ctx, sessionID, voiceHistoryWindowSize)
 	if err != nil {
 		p.logger.Error("加载语音面试历史失败",

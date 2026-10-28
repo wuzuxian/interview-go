@@ -114,17 +114,15 @@ func trimVoiceToNull(text string) *string {
 }
 
 // formatTurnLines DIALOGUE 消息 → 「面试官：/候选人：」历史行（Java
-// VoiceContextCompressor.formatRecent L237-267 语义逐条：未答问题挂起直到下一轮
-// 出现，空白文本按缺失处理）。本票供原始最近窗口格式化，票 07 压缩加载复用同语义。
+// VoiceContextCompressor.formatRecent L237-267 逐字）：未答问题挂起直到下一轮
+// 出现，空白文本按缺失处理；挂起分支先行——挂起期间遇到任何行（含双空行）都先
+// 冲刷挂起问题再处理本行。票 06 原始窗口格式化与票 07 压缩装配共用本语义。
 func formatTurnLines(msgs []MessageEntity) []string {
 	lines := []string{}
 	pendingQuestion := ""
 	for _, m := range msgs {
 		aiText := trimVoiceToNull(valueOfVoice(m.AiGeneratedText))
 		userText := trimVoiceToNull(valueOfVoice(m.UserRecognizedText))
-		if aiText == nil && userText == nil {
-			continue
-		}
 		if pendingQuestion != "" {
 			lines = append(lines, "面试官："+pendingQuestion)
 			pendingQuestion = ""

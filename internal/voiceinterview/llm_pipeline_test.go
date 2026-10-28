@@ -8,6 +8,7 @@ package voiceinterview
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -720,6 +721,72 @@ func TestPipeline历史与简历进prompt(t *testing.T) {
 	if strings.Contains(user, "候选人：答二") {
 		t.Errorf("历史不应包含本轮回答: %s", user)
 	}
+}
+
+// 历史超预算走压缩装配（票 07 接 06 取历史点）：管道注入压缩加载器后，长历史被
+// 有界装配为「摘要行 + 最近窗口」，prompt 不再含早期原文；摘要由独立的普通模型
+// 生成（非流式 resolver），写回由加载器负责。
+func TestPipeline历史超预算走压缩装配(t *testing.T) {
+	f := newFixture()
+	tts := newFakeTtsServer(t)
+	tts.textScripts = map[string]func(*fakeTtsServer, *websocket.Conn){
+		"好的。": scriptSynthDone([]byte{1}),
+	}
+	model := &scriptedStreamModel{tokens: []string{"好的。"}}
+	models := &stubVoiceResolver{queue: []StreamChatModel{model}}
+	summary := &stubPlainCompleter{content: "这是早期摘要"}
+	// 小窗口小批次便于构造触发：window=2、batch=1、预算充足。
+	cc := ContextCompressionConfig{Enabled: true, Mode: ModeSummary, WindowSize: 2,
+		SummaryBatchSize: 1, MaxHistoryChars: 12000, MaxSummaryChars: 4000}
+	cfg := Config{ChunkedAudioEnabled: true, AIQuestionMaxChars: 120,
+		LLMStreamPushInterval: 80 * time.Millisecond, LLMStreamMinCharsDelta: 12,
+		TTSConnectTimeout: 300 * time.Millisecond, TTSTimeout: 400 * time.Millisecond,
+		TTSFullTimeout: 800 * time.Millisecond, MaxConcurrentTTSPerSession: 3}
+	pipe := NewTurnPipeline(TurnPipelineDeps{
+		Svc: f.svc, Store: f.store, Models: models,
+		Settings: voiceConfigStub{tts: TtsSettings{URL: tts.URL(), Model: "m", APIKey: "k", Mode: "commit"}},
+		TTS:      NewTtsClient(cfg, discardLogger()),
+		Prompts:  NewPromptService(interview.NewPromptSanitizer(nil), stubSkillPersona{persona: &voicePersona}, discardLogger()),
+		Cfg:      cfg, Logger: discardLogger(),
+		// 压缩加载器复用同一内存 store（fakeCompStore 包装补齐压缩链路四方法）。
+		History: NewHistoryLoader(
+			&fakeCompStore{fakeStore: f.store, savedSummaries: map[int64]savedSummary{}},
+			NewCompressor(cc, summary, discardLogger()), cc, discardLogger()),
+	})
+
+	// 预置 5 轮历史（seq 1..5）：最近窗口取 seq4,5，待摘要批取 (0,4) 升序最早的
+	// 1 条 = seq1（Java PageRequest.of(0, batchSize) 语义）。
+	id := f.store.addSession(voiceTurnSession())
+	msgs := make([]MessageEntity, 0, 5)
+	for i := 1; i <= 5; i++ {
+		q := fmt.Sprintf("问%d内容", i)
+		a := fmt.Sprintf("答%d", i)
+		msgs = append(msgs, voiceMsg(id, i, &q, &a))
+	}
+	f.store.setDialogues(id, msgs)
+
+	pipe.Turn(context.Background(), TurnInput{SessionID: id, UserText: "答六", Speaker: newRecordingSpeaker()})
+
+	inputs := model.lastInput()
+	if len(inputs) != 2 {
+		t.Fatalf("应为 system+user 两条: %d", len(inputs))
+	}
+	user := inputs[1].Content
+	if !strings.Contains(user, "【对话摘要】这是早期摘要") {
+		t.Errorf("prompt 应含压缩摘要行: %s", user)
+	}
+	if !strings.Contains(user, "面试官：问4内容") || !strings.Contains(user, "候选人：答5") {
+		t.Errorf("prompt 应含最近窗口原文: %s", user)
+	}
+	if strings.Contains(user, "问1内容") || strings.Contains(user, "问2内容") || strings.Contains(user, "问3内容") {
+		t.Errorf("已摘要与窗口外原文不应进 prompt: %s", user)
+	}
+	// 摘要由独立普通模型生成，且只喂待摘要批（seq1）。
+	prompts := summary.promptList()
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "面试官：问1内容") || strings.Contains(prompts[0], "问4") {
+		t.Errorf("摘要模型应恰好调用一次且只含待摘要批: %v", prompts)
+	}
+	// 压缩链路读历史不影响回合完成契约：模型回复照常进入流式收尾（文本 final 已发）。
 }
 
 // ===== 落库语义 =====

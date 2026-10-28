@@ -27,6 +27,15 @@ func (b *Bridge) VoiceStreamModelFor(ctx context.Context, providerID string) (ai
 	return einoStreamModel{m}, nil
 }
 
+// VoicePlainCompleterFor 按场次 llmProvider 解析非流式普通模型（上下文摘要专用，
+// 票 07）：Generate 直调、无工具、无对话记忆注入，对齐 Java
+// LlmProviderRegistry.getPlainChatClient(llmProvider)。einoopenai.ChatModel 同时
+// 实现 Generate 与 Stream，生产侧与流式共用同一注册表构建。
+func (b *Bridge) VoicePlainCompleterFor(ctx context.Context, providerID string) (ai.ChatCompleter, error) {
+	id := resolveVoiceProviderID(providerID, b.Reg.DefaultChatID())
+	return b.Reg.ChatModelFor(ctx, b.Crypto, id, b.Timeout)
+}
+
 // resolveVoiceProviderID Java resolveProviderId 语义（与 interview.DefaultChatProviderID
 // 同规则；独立实现以保持 aibridge 不依赖业务模块）。
 func resolveVoiceProviderID(providerID, defaultID string) string {
