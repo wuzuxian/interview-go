@@ -1,6 +1,9 @@
 package interview
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SkillDTO GET /api/interview/skills 与 /{id} 的响应体，
 // 字段名与 Java 版 InterviewSkillService.SkillDTO（record 驼峰序列化）逐字一致：
@@ -127,4 +130,45 @@ type SessionListItemDTO struct {
 	InterviewCategory *string    `json:"interviewCategory"`
 	CreatedAt         time.Time  `json:"createdAt"`
 	CompletedAt       *time.Time `json:"completedAt"`
+}
+
+// InterviewDetailDTO GET /sessions/{id}/details 响应体，对应 Java InterviewDetailDTO record
+// （笔记 07）：id/sessionId/totalQuestions/status/evaluateStatus/evaluateError/overallScore/
+// sourceType/knowledgeBaseId/overallFeedback/createdAt/completedAt/questions/strengths/
+// improvements/referenceAnswers/answers。questions 与 referenceAnswers 为 JSON 列原样透传
+// （Java List<Object> 语义：null/非法解析 → null）；时间沿用列表项的 RFC3339 约定
+// （笔记 08 §5：Go 侧时间格式与前端约定，全模块一致）。
+type InterviewDetailDTO struct {
+	ID               int64             `json:"id"`
+	SessionID        string            `json:"sessionId"`
+	TotalQuestions   *int              `json:"totalQuestions"`
+	Status           *string           `json:"status"`
+	EvaluateStatus   *string           `json:"evaluateStatus"`
+	EvaluateError    *string           `json:"evaluateError"`
+	OverallScore     *int              `json:"overallScore"`
+	SourceType       *string           `json:"sourceType"`
+	KnowledgeBaseID  *int64            `json:"knowledgeBaseId"`
+	OverallFeedback  *string           `json:"overallFeedback"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	CompletedAt      *time.Time        `json:"completedAt"`
+	Questions        json.RawMessage   `json:"questions"`
+	Strengths        []string          `json:"strengths"`
+	Improvements     []string          `json:"improvements"`
+	ReferenceAnswers json.RawMessage   `json:"referenceAnswers"`
+	Answers          []AnswerDetailDTO `json:"answers"`
+}
+
+// AnswerDetailDTO 明细中的单题作答，对应 Java InterviewDetailDTO.AnswerDetailDTO。
+// 未答题生成空记录（Java buildAnswerDetailList 逐字）：userAnswer/referenceAnswer/
+// keyPoints/answeredAt 为 null，score 取题目 score ?? 0、feedback 取题目 feedback。
+type AnswerDetailDTO struct {
+	QuestionIndex   *int       `json:"questionIndex"`
+	Question        *string    `json:"question"`
+	Category        *string    `json:"category"`
+	UserAnswer      *string    `json:"userAnswer"`
+	Score           *int       `json:"score"`
+	Feedback        *string    `json:"feedback"`
+	ReferenceAnswer *string    `json:"referenceAnswer"`
+	KeyPoints       []string   `json:"keyPoints"`
+	AnsweredAt      *time.Time `json:"answeredAt"`
 }

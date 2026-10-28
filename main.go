@@ -196,11 +196,33 @@ func main() {
 	// 出题服务（票 07）：双路并行真实出题，LLM 调用经 ModelResolver（超时走 llm_call_timeout）。
 	questionSvc := interview.NewQuestionService(interviewSvc, bridge, invoker, appCfg.Interview.FollowUpCount, slogger)
 	// 场次子系统（票 03/04）：repo + Redis 缓存/创建锁 + 服务（rdb.Client 为内嵌原生客户端）。
-	// 评估入队扩展点票 06 注入真实现，当前传 nil（空操作）。
 	sessionCache := interview.NewSessionCache(rdb.Client, appCfg.Interview, slogger)
 	sessionRepo := interview.NewRepo(db.DB)
-	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, questionSvc, appCfg.Interview, slogger, nil)
-	interviewCtl := interview.NewController(interviewSvc, sessionSvc, rl)
+
+	// 评估链路（票 06）：Redis Stream 评估队列——生产者即 EvaluateEnqueuer 扩展点
+	// （末题交卷/提前交卷入队），消费者 + 恢复调度器照 resume 模块的接线方式启停。
+	evalStream := interview.NewRedisEvalStream(rdb.Client)
+	evalTracker := interview.NewRedisEvalInflight(rdb.Client)
+	evalProducer := interview.NewEvaluateStreamProducer(evalStream, evalTracker, sessionRepo, slogger)
+	sessionSvc := interview.NewSessionService(sessionRepo, sessionCache, interviewSvc, questionSvc, appCfg.Interview, slogger, evalProducer)
+	evalEngine := interview.NewEvaluationEngine(appCfg.Interview.Evaluation.EngineConfig(), slogger)
+	evalRunner := interview.NewEngineRunner(evalEngine, invoker, bridge, slogger)
+	evalConsumer := interview.NewEvaluateConsumer(evalStream, evalTracker, sessionRepo, evalRunner, interviewSvc, slogger)
+	evalConsumer.Start(ctx)
+	defer evalConsumer.Stop()
+	evalRecovery := interview.NewEvalRecoveryScheduler(evalTracker, sessionRepo, evalStream, interview.EvalRecoveryConfig{
+		Enabled:             appCfg.Async.Recovery.Enabled,
+		PendingThreshold:    appCfg.Async.Recovery.PendingThreshold,
+		ProcessingThreshold: appCfg.Async.Recovery.ProcessingThreshold,
+		Interval:            appCfg.Async.Recovery.Interval,
+		BatchSize:           appCfg.Async.Recovery.BatchSize,
+	}, slogger)
+	evalRecovery.Start(ctx)
+	defer evalRecovery.Stop()
+
+	// 报告/明细节拍（票 06）：存量报告返回、同步兜底评估、明细组装。
+	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
+	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

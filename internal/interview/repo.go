@@ -41,6 +41,16 @@ func (r *Repo) FindByRequestID(ctx context.Context, requestID string) (*SessionE
 	return &e, nil
 }
 
+// FindByID 按内部自增主键查询（评估入队按行 ID 反查业务 sessionId）。
+func (r *Repo) FindByID(ctx context.Context, id int64) (*SessionEntity, error) {
+	var e SessionEntity
+	err := r.db.WithContext(ctx).First(&e, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // FindUnfinishedByResumeID 未完成场次（CREATED/IN_PROGRESS），按 created_at desc 取第一条
 // （对齐 Java findUnfinishedSession 查询语义）。
 func (r *Repo) FindUnfinishedByResumeID(ctx context.Context, resumeID int64) (*SessionEntity, error) {
@@ -111,6 +121,64 @@ func (r *Repo) UpdateCurrentQuestionIndex(ctx context.Context, sessionID string,
 	return r.db.WithContext(ctx).Model(&SessionEntity{}).
 		Where("session_id = ?", sessionID).
 		Updates(map[string]any{"current_question_index": index, "status": StatusInProgress}).Error
+}
+
+// UpdateEvaluateStatus 评估状态更新（对齐 Java InterviewPersistenceService.updateEvaluateStatus）：
+// evaluate_error 非空截断 500 写入、为空清空；行不存在静默跳过（Java ifPresent）。
+func (r *Repo) UpdateEvaluateStatus(ctx context.Context, sessionID string, status EvaluateStatus, evalError *string) error {
+	return r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Where("session_id = ?", sessionID).
+		Updates(map[string]any{
+			"evaluate_status": status,
+			"evaluate_error":  truncateEvaluateErrorPtr(evalError),
+		}).Error
+}
+
+// UpdateReportColumns saveReport 的会话列写入（列映射由 reportSessionColumns 构建，
+// 含 status=EVALUATED 与 completed_at）。
+func (r *Repo) UpdateReportColumns(ctx context.Context, sessionID string, columns map[string]any) error {
+	return r.db.WithContext(ctx).Model(&SessionEntity{}).
+		Where("session_id = ?", sessionID).Updates(columns).Error
+}
+
+// UpsertAnswerEval 评估回填 upsert（saveReport 语义，对齐 Java answersToSave）：
+// 已有行仅更新评分列（不动 user_answer/question/category/answered_at）；
+// 无行新建（user_answer 保持 NULL 标注未回答，answered_at 取当前时间）。
+func (r *Repo) UpsertAnswerEval(ctx context.Context, w answerEvalWrite) error {
+	if w.Create {
+		row := answerEvalInsertRow(w, time.Now())
+		return r.db.WithContext(ctx).Create(&row).Error
+	}
+	updates := map[string]any{
+		"score":    w.Score,
+		"feedback": w.Feedback,
+	}
+	if w.ReferenceAnswer != nil {
+		updates["reference_answer"] = w.ReferenceAnswer
+	}
+	if w.KeyPointsJSON != nil {
+		updates["key_points_json"] = w.KeyPointsJSON
+	}
+	return r.db.WithContext(ctx).Model(&AnswerEntity{}).
+		Where("session_id = ? AND question_index = ?", w.SessionRowID, w.QuestionIndex).
+		Updates(updates).Error
+}
+
+// answerEvalInsertRow 新建回填行的字段（saveReport 语义：userAnswer 保持 NULL
+// 标注未回答，score/feedback/参考答案/要点来自评估）。
+func answerEvalInsertRow(w answerEvalWrite, now time.Time) AnswerEntity {
+	return AnswerEntity{
+		SessionID:       w.SessionRowID,
+		QuestionIndex:   intPtr(w.QuestionIndex),
+		Question:        stringPtr(w.Question),
+		Category:        w.Category,
+		UserAnswer:      nil,
+		Score:           intPtr(w.Score),
+		Feedback:        stringPtr(w.Feedback),
+		ReferenceAnswer: w.ReferenceAnswer,
+		KeyPointsJSON:   w.KeyPointsJSON,
+		AnsweredAt:      now,
+	}
 }
 
 // UpsertAnswer 按（场次内部ID, 题号）upsert 作答：已有行 → 更新（不新增行，

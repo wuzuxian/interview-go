@@ -25,4 +25,24 @@ type Config struct {
 	CreateLockLease time.Duration `config:"create_lock_lease" default:"600s"`
 	// CreateResultTTL 幂等结果键 TTL（Java CREATE_RESULT_TTL = 1 天）。
 	CreateResultTTL time.Duration `config:"create_result_ttl" default:"24h"`
+	// Evaluation 评估引擎配置（app.interview.evaluation，Java InterviewEvaluationProperties）。
+	Evaluation Evaluation `config:"evaluation"`
+}
+
+// Evaluation 评估引擎配置（票 06，键与 Java app.interview.evaluation 对齐）。
+type Evaluation struct {
+	BatchSize             int  `config:"batch_size" default:"8"`
+	FallbackSplitEnabled  bool `config:"fallback_split_enabled" default:"true"`
+	FallbackMaxExtraCalls int  `config:"fallback_max_extra_calls" default:"6"`
+	FallbackMinGroups     int  `config:"fallback_min_groups" default:"2"`
+}
+
+// EngineConfig 转评估引擎配置（引擎构造自带钳制：batchSize≥1、预算≥0、最小组数≥2）。
+func (e Evaluation) EngineConfig() EvaluationConfig {
+	return EvaluationConfig{
+		BatchSize:             e.BatchSize,
+		FallbackSplitEnabled:  e.FallbackSplitEnabled,
+		FallbackMaxExtraCalls: e.FallbackMaxExtraCalls,
+		FallbackMinGroups:     e.FallbackMinGroups,
+	}
 }

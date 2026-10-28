@@ -16,13 +16,14 @@ import (
 type Controller struct {
 	svc      *Service
 	sessions *SessionService
+	report   *ReportService
 	rl       *ratelimit.Limiter
 }
 
-// NewController 创建控制器。sessions/rl 为票 03 场次子系统；
-// skills 路由（票 01）与场次路由共存于同一控制器。
-func NewController(svc *Service, sessions *SessionService, rl *ratelimit.Limiter) *Controller {
-	return &Controller{svc: svc, sessions: sessions, rl: rl}
+// NewController 创建控制器。sessions/rl 为票 03 场次子系统，report 为票 06
+// 报告/明细节拍；skills 路由（票 01）与场次路由共存于同一控制器。
+func NewController(svc *Service, sessions *SessionService, report *ReportService, rl *ratelimit.Limiter) *Controller {
+	return &Controller{svc: svc, sessions: sessions, report: report, rl: rl}
 }
 
 // RegisterRoutes 注册 /api/interview 下全部路由。
@@ -53,6 +54,9 @@ func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	h.POST("/sessions/:sessionId/answers", ctl.rl.Middleware(ratelimit.Global(10, time.Second)), ctl.submitAnswer)
 	h.PUT("/sessions/:sessionId/answers", ctl.saveAnswer)
 	h.POST("/sessions/:sessionId/complete", ctl.completeSession)
+	// 报告/明细（票 06）：与 Java 一致无 @RateLimit（笔记 03 §5）。
+	h.GET("/sessions/:sessionId/report", ctl.getReport)
+	h.GET("/sessions/:sessionId/details", ctl.getDetails)
 	h.DELETE("/sessions/:sessionId", ctl.deleteSession)
 }
 
@@ -196,4 +200,24 @@ func (ctl *Controller) completeSession(c *gin.Context) {
 		return
 	}
 	result.OK(c, nil)
+}
+
+// ===== 报告/明细（票 06）=====
+
+func (ctl *Controller) getReport(c *gin.Context) {
+	data, err := ctl.report.GetReport(c.Request.Context(), c.Param("sessionId"))
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
+}
+
+func (ctl *Controller) getDetails(c *gin.Context) {
+	data, err := ctl.report.GetInterviewDetail(c.Request.Context(), c.Param("sessionId"))
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
 }

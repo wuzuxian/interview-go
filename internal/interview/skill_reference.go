@@ -10,9 +10,9 @@ import (
 
 // 截断预算与提示文案（对齐 Java 常量与字符串字面量）。
 const (
-	MaxReferenceSectionChars         = 12000
+	MaxReferenceSectionChars           = 12000
 	MaxEvaluationReferenceSectionChars = 6000
-	MaxSingleReferenceChars          = 3000
+	MaxSingleReferenceChars            = 3000
 
 	truncatedTotalMarker  = "\n...（references 已截断）"
 	truncatedSingleMarker = "\n...（单文件内容已截断）"
@@ -30,6 +30,24 @@ func (s *Service) BuildReferenceSection(skill *SkillDTO, allocation map[string]i
 func (s *Service) buildEvaluationReferenceSection(skill *SkillDTO) string {
 	return s.buildReferenceSectionInternal(skill, func(CategoryDTO) bool { return true },
 		MaxEvaluationReferenceSectionChars)
+}
+
+// BuildEvaluationReferenceSectionSafe 评估侧安全入口（票 06，对齐 Java
+// buildEvaluationReferenceSectionSafe）：skillId 空 → ""；方向不存在/异常 → 告警降级 ""。
+// 题目自带参考基线为空时由评估引擎回退到本段（EvaluateInput.SkillReference）。
+func (s *Service) BuildEvaluationReferenceSectionSafe(skillID string) string {
+	if strings.TrimSpace(skillID) == "" {
+		return ""
+	}
+	skill, err := s.reg.Get(skillID)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("加载评估参考基线失败，降级为无参考",
+				slog.String("skillId", skillID), slog.String("error", err.Error()))
+		}
+		return ""
+	}
+	return s.buildEvaluationReferenceSection(skill)
 }
 
 // buildReferenceSectionInternal 核心实现（对齐 Java 363-403 行）：
@@ -96,7 +114,7 @@ func (s *Service) loadReferenceContent(skillID, ref string, shared bool) string 
 }
 
 // readReferenceContent 读取单个参考文件：trim 后超 3000 字符截断并追加单文件截断提示
-//（对齐 Java readReferenceContent，533-549 行）。嵌入资源读取失败按空内容处理（warn 不阻断）。
+// （对齐 Java readReferenceContent，533-549 行）。嵌入资源读取失败按空内容处理（warn 不阻断）。
 func (s *Service) readReferenceContent(path string) string {
 	content, err := fs.ReadFile(s.fsys, path)
 	if err != nil {
