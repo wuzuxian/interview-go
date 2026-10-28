@@ -81,8 +81,14 @@ const (
 	CodeProviderReadFailed   = 11004
 	CodeProviderWriteFailed  = 11005
 	CodeDefaultNoDelete      = 11007
-	CodeVoiceReadFailed      = 11009
-	CodeVoiceWriteFailed     = 11010
+	// 语音模块错误码，对照 Java ErrorCode 语音面试段（L69-72）与语音配置段
+	// （L82-84）原文补全：10001/10004/10006/11009/11010/11011（11009/11010 原已预留）。
+	CodeVoiceSessionNotFound    = 10001
+	CodeVoiceEvaluationFailed   = 10004
+	CodeVoiceEvaluationNotFound = 10006
+	CodeVoiceReadFailed         = 11009
+	CodeVoiceWriteFailed        = 11010
+	CodeVoiceConfigTestFailed   = 11011
 )
 
 // 预置常用错误。
@@ -107,4 +113,16 @@ func InterviewSessionNotFound() *AppError {
 // InterviewSessionNotFoundWithMessage 3001 + 自定义消息（unfinished 无记录用）。
 func InterviewSessionNotFoundWithMessage(message string) *AppError {
 	return New(CodeInterviewSessionNotFound, message)
+}
+
+// VoiceSessionNotFound 语音面试会话不存在（10001 默认消息，
+// Java VOICE_SESSION_NOT_FOUND "语音面试会话不存在"）。
+func VoiceSessionNotFound() *AppError {
+	return New(CodeVoiceSessionNotFound, "语音面试会话不存在")
+}
+
+// VoiceSessionNotFoundWithMessage 10001 + 自定义消息（删除/评估路径的
+// "会话不存在: {id}"）。
+func VoiceSessionNotFoundWithMessage(message string) *AppError {
+	return New(CodeVoiceSessionNotFound, message)
 }

@@ -25,23 +25,24 @@ import (
 	"github.com/wuzuxian/interview/internal/resume"
 	"github.com/wuzuxian/interview/internal/storage"
 	"github.com/wuzuxian/interview/internal/vector"
+	"github.com/wuzuxian/interview/internal/voiceinterview"
 )
 
 // AppConfig 业务配置（app.* 段），键与 Java 版 application.yml 对齐。
 type AppConfig struct {
 	AI struct {
-		DefaultProvider          string                              `config:"default_provider" default:"dashscope"`
-		DefaultEmbeddingProvider string                              `config:"default_embedding_provider" default:"dashscope"`
-		EmbeddingDimensions      int                                 `config:"embedding_dimensions" default:"1024"`
-		EncryptionKey            string                              `config:"api_key_encryption_key"`
-		AllowFallbackKey         bool                                `config:"allow_fallback_encryption_key" default:"false"`
-		StructuredMaxAttempts    int                                 `config:"structured_max_attempts" default:"2"`
-		StructuredIncludeLastError            bool   `config:"structured_include_last_error" default:"true"`
-		StructuredRetryUseRepairPrompt        bool   `config:"structured_retry_use_repair_prompt" default:"true"`
-		StructuredRetryAppendStrictJSONInstruction bool `config:"structured_retry_append_strict_json_instruction" default:"true"`
-		StructuredErrorMessageMaxLength       int    `config:"structured_error_message_max_length" default:"200"`
-		LLMCallTimeout           time.Duration                       `config:"llm_call_timeout" default:"120s"`
-		Providers                map[string]llmprovider.SeedProvider `config:"providers"`
+		DefaultProvider                            string                              `config:"default_provider" default:"dashscope"`
+		DefaultEmbeddingProvider                   string                              `config:"default_embedding_provider" default:"dashscope"`
+		EmbeddingDimensions                        int                                 `config:"embedding_dimensions" default:"1024"`
+		EncryptionKey                              string                              `config:"api_key_encryption_key"`
+		AllowFallbackKey                           bool                                `config:"allow_fallback_encryption_key" default:"false"`
+		StructuredMaxAttempts                      int                                 `config:"structured_max_attempts" default:"2"`
+		StructuredIncludeLastError                 bool                                `config:"structured_include_last_error" default:"true"`
+		StructuredRetryUseRepairPrompt             bool                                `config:"structured_retry_use_repair_prompt" default:"true"`
+		StructuredRetryAppendStrictJSONInstruction bool                                `config:"structured_retry_append_strict_json_instruction" default:"true"`
+		StructuredErrorMessageMaxLength            int                                 `config:"structured_error_message_max_length" default:"200"`
+		LLMCallTimeout                             time.Duration                       `config:"llm_call_timeout" default:"120s"`
+		Providers                                  map[string]llmprovider.SeedProvider `config:"providers"`
 	} `config:"ai"`
 	Resume struct {
 		AllowedTypes []string `config:"allowed_types"`
@@ -49,7 +50,10 @@ type AppConfig struct {
 	} `config:"resume"`
 	// Interview 模拟面试配置段（app.interview），结构定义在 interview 包内与业务同处。
 	Interview interview.Config `config:"interview"`
-	Storage   struct {
+	// VoiceInterview 语音面试配置段（app.voice_interview），结构定义在
+	// voiceinterview 包内；默认值随票在 config.go 的 default 标签里逐票补齐。
+	VoiceInterview voiceinterview.Config `config:"voice_interview"`
+	Storage        struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
 		SecretKey        string `config:"secret_key"`
@@ -242,6 +246,19 @@ func main() {
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
+	// 语音面试模块（票 01：会话域 + REST 契约；评估流仅入队，消费侧属票 08；
+	// WS 网关/管道随票 04-07 接入）。repo + Redis 会话缓存 + 评估流入队接缝。
+	voiceRepo := voiceinterview.NewRepo(db.DB)
+	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
+	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
+	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
+		Repo:   voiceRepo,
+		Cache:  voiceCache,
+		Stream: voiceStream,
+		Logger: slogger,
+	})
+	voiceCtl := voiceinterview.NewController(voiceSvc)
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -260,6 +277,7 @@ func main() {
 	providerCtl.RegisterRoutes(api)
 	resumeCtl.RegisterRoutes(api)
 	interviewCtl.RegisterRoutes(api)
+	voiceCtl.RegisterRoutes(api)
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})
 	})
