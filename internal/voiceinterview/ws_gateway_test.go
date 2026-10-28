@@ -199,13 +199,24 @@ func newWSClient(conn *websocket.Conn) *wsClient {
 	return c
 }
 
-// next 取下一条下行消息；超时或连接关闭返回 nil。
+// next 取下一条下行消息；超时或连接关闭返回 nil。关闭与最后一条下行消息几乎同时
+// 到达时（如暂停超时提示后紧跟断连），先取已入队消息再认定关闭。
 func (c *wsClient) next(timeout time.Duration) map[string]any {
 	select {
 	case m := <-c.ch:
 		return m
+	default:
+	}
+	select {
+	case m := <-c.ch:
+		return m
 	case <-c.closed:
-		return nil
+		select {
+		case m := <-c.ch:
+			return m
+		default:
+			return nil
+		}
 	case <-time.After(timeout):
 		return nil
 	}

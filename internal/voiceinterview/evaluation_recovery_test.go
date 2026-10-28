@@ -14,10 +14,11 @@ import (
 	"github.com/wuzuxian/interview/internal/apperr"
 )
 
-// recoveryFixture 恢复巡检夹具（Service + fakeStore + fakeStream）。
+// recoveryFixture 恢复巡检夹具（Service + fakeStore + fakeCache + fakeStream）。
 type recoveryFixture struct {
 	rec    *svcRecorder
 	store  *fakeStore
+	cache  *fakeCache
 	stream *fakeStream
 	svc    *Service
 	now    time.Time
@@ -35,7 +36,7 @@ func newRecoveryFixture() *recoveryFixture {
 		Logger:   discardLogger(),
 		Recovery: EvalRecoveryParams{PendingRequeueAfter: 3 * time.Minute, ProcessingFailAfter: 30 * time.Minute},
 	})
-	return &recoveryFixture{rec: rec, store: store, stream: stream, svc: svc, now: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	return &recoveryFixture{rec: rec, store: store, cache: cache, stream: stream, svc: svc, now: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
 }
 
 func (f *recoveryFixture) addStaleSession(id int64, status VoiceSessionStatus, evalStatus VoiceEvaluateStatus, updatedAgo time.Duration) int64 {

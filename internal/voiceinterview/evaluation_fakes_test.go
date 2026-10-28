@@ -377,3 +377,22 @@ func (s *fakeStore) UpdateEvaluateRequeue(ctx context.Context, sessionID int64, 
 	}
 	return nil
 }
+
+// FindStaleInProgressSessions 票 09 僵尸清理数据源（内存表镜像 Java
+// findByStatusAndStartTimeBefore：状态 IN_PROGRESS 且 start_time 严格早于 before）。
+func (s *fakeStore) FindStaleInProgressSessions(ctx context.Context, before time.Time) ([]SessionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.add("stale-inprogress-find")
+	var out []SessionEntity
+	for _, e := range s.sessions {
+		if statusEnum(e.Status) != VoiceStatusInProgress {
+			continue
+		}
+		if e.StartTime == nil || !e.StartTime.Before(before) {
+			continue
+		}
+		out = append(out, *e)
+	}
+	return out, nil
+}
