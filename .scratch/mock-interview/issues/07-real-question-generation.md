@@ -6,7 +6,7 @@
 
 **Blocked by:** 02（ModelResolver 接缝）、03（创建路径）、01（参考题库）
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] 真实 Provider 创建场次：主问题数量等于请求值、分类来自方向定义、每主问题带追问（默认 1、上限 2）与知识点摘要
 - [ ] 有简历时双路并行（简历题约 60%）；stub 断言两路 prompt 分别包含简历内容与分配表/参考题库

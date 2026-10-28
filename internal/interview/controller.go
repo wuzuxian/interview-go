@@ -47,6 +47,12 @@ func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	), ctl.createSession)
 	h.GET("/sessions", ctl.listSessions)
 	h.GET("/sessions/:sessionId", ctl.getSession)
+	// 问答闭环（票 04）：提交答案全局限流 10/s（对齐 Java @RateLimit(GLOBAL, 10)）；
+	// 取题 / 暂存（PUT）/ 提前交卷与 Java 一致无 @RateLimit（笔记 03 §5）。
+	h.GET("/sessions/:sessionId/question", ctl.getCurrentQuestion)
+	h.POST("/sessions/:sessionId/answers", ctl.rl.Middleware(ratelimit.Global(10, time.Second)), ctl.submitAnswer)
+	h.PUT("/sessions/:sessionId/answers", ctl.saveAnswer)
+	h.POST("/sessions/:sessionId/complete", ctl.completeSession)
 	h.DELETE("/sessions/:sessionId", ctl.deleteSession)
 }
 
@@ -131,6 +137,61 @@ func (ctl *Controller) findUnfinishedSession(c *gin.Context) {
 
 func (ctl *Controller) deleteSession(c *gin.Context) {
 	if err := ctl.sessions.DeleteSession(c.Request.Context(), c.Param("sessionId")); err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, nil)
+}
+
+// ===== 问答闭环（票 04）=====
+
+// bindAnswerRequest PUT/POST /sessions/{id}/answers 共用请求体绑定：
+// JSON 非法 → 400；questionIndex 缺失由 service 显式校验（answerIndexOf）。
+func bindAnswerRequest(c *gin.Context) (AnswerRequest, bool) {
+	var req AnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.Fail(c, 400, "请求体格式不正确")
+		return req, false
+	}
+	return req, true
+}
+
+func (ctl *Controller) getCurrentQuestion(c *gin.Context) {
+	data, err := ctl.sessions.GetCurrentQuestion(c.Request.Context(), c.Param("sessionId"))
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
+}
+
+func (ctl *Controller) submitAnswer(c *gin.Context) {
+	req, ok := bindAnswerRequest(c)
+	if !ok {
+		return
+	}
+	data, err := ctl.sessions.SubmitAnswer(c.Request.Context(), c.Param("sessionId"), req)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, data)
+}
+
+func (ctl *Controller) saveAnswer(c *gin.Context) {
+	req, ok := bindAnswerRequest(c)
+	if !ok {
+		return
+	}
+	if err := ctl.sessions.SaveAnswer(c.Request.Context(), c.Param("sessionId"), req); err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, nil)
+}
+
+func (ctl *Controller) completeSession(c *gin.Context) {
+	if err := ctl.sessions.CompleteSession(c.Request.Context(), c.Param("sessionId")); err != nil {
 		result.FailErr(c, err)
 		return
 	}

@@ -6,7 +6,7 @@
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 全流程 curl：创建 → 取题（状态转 IN_PROGRESS）→ 逐题提交 → 末题自动 COMPLETED
 - [ ] 暂存不推进当前索引，重新取题仍是原题
