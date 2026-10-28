@@ -1,16 +1,22 @@
-// Command smoke 真实 LLM 全链路冒烟命令（票 09）。
+// Command smoke 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式）。
 //
-// 发布前人工验收项（spec Testing Decisions 验收方式 B）：走真实 Provider 完成
-// 创建（真实出题）→ 模拟作答 → 交卷 → 轮询评估 → 报告校验 → 明细校验 → PDF 导出，
+// 发布前人工验收项（spec Testing Decisions 验收方式 B + 真实冒烟条目）：
+//   - text 模式（默认）：走真实 Provider 完成 创建（真实出题）→ 模拟作答 →
+//     交卷 → 轮询评估 → 报告校验 → 明细校验 → PDF 导出；
+//   - voice 模式：走真实语音链路完成 前置检查 voice_config → 创建语音场次 →
+//     WS 开场白 → TTS 开场音频重采样回喂 ASR → 提交 → 字幕/流式文本/音频块
+//     断言 → 结束 → 轮询评估 → 报告校验。
+//
 // 每步打印校验点与耗时；任一步失败非零退出并输出可定位信息（步骤名 + 响应摘要）。
 //
 // 前置条件（-h 查看完整说明）：
 //   - 服务已运行（本命令只探测，不负责拉起）；LLM 调用 43-74s，服务需以
 //     APP_SERVER_WRITE_TIMEOUT=180s 启动，否则客户端会先超时；
 //   - config.yaml 的 app.ai.providers / 数据库 llm_provider_config 有可用真实 Provider
-//     （如 dashscope/qwen3.5-flash）；Postgres/Redis 已运行。
+//     （如 dashscope/qwen3.5-flash）；Postgres/Redis 已运行；
+//   - voice 模式另需设置页 voice_config 已配置真实 ASR/TTS DashScope Key。
 //
-// 用法：go run ./cmd/smoke [flags]
+// 用法：go run ./cmd/smoke [-mode text|voice] [flags]
 package main
 
 import (
@@ -42,6 +48,7 @@ const (
 
 // options 命令行参数。
 type options struct {
+	mode          string
 	baseURL       string
 	timeout       time.Duration
 	evalWait      time.Duration
@@ -55,41 +62,66 @@ type options struct {
 
 func main() {
 	opts := parseFlags()
-	if err := run(opts, os.Stdout); err != nil {
+	var err error
+	switch opts.mode {
+	case "text":
+		err = run(opts, os.Stdout)
+	case "voice":
+		err = runVoice(opts, os.Stdout)
+	default:
+		err = fmt.Errorf("参数 -mode 非法：%q（可选 text|voice）", opts.mode)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n冒烟失败: %v\n", err)
 		os.Exit(1)
+	}
+	if opts.mode == "voice" {
+		fmt.Println("\n冒烟通过：语音面试全链路（前置检查→创建→WS 开场白→TTS 音频重采样回喂 ASR→提交→字幕/流式文本/音频块→结束→评估→报告→清理）全部校验点通过。")
+		return
 	}
 	fmt.Println("\n冒烟通过：真实 LLM 全链路（创建→出题→作答→交卷→评估→报告→明细→PDF）全部校验点通过。")
 }
 
-// parseFlags 解析命令行参数并注册帮助文案（前置条件说明，票面验收第 5 项）。
+// parseFlags 解析命令行参数并注册帮助文案（前置条件说明，票面验收项）。
 func parseFlags() *options {
 	opts := &options{}
+	flag.StringVar(&opts.mode, "mode", "text",
+		"冒烟模式：text=文字面试全链路（默认）；voice=语音面试全链路（需 voice_config 已配置真实 ASR/TTS Key）")
 	flag.StringVar(&opts.baseURL, "base-url", defaultBaseURL,
 		"服务地址（须包含协议，如 http://127.0.0.1:8080）")
 	flag.DurationVar(&opts.timeout, "timeout", defaultTimeout,
-		"单个 HTTP 请求超时（覆盖出题/报告等 LLM 调用，实测 43-74s；服务端需以 APP_SERVER_WRITE_TIMEOUT=180s 启动）")
+		"单个 HTTP 请求/WS 等待超时（覆盖出题/报告等 LLM 调用，实测 43-74s；服务端需以 APP_SERVER_WRITE_TIMEOUT=180s 启动）")
 	flag.DurationVar(&opts.evalWait, "eval-timeout", defaultEvalWait,
 		"评估状态轮询上限（超时判定失败）")
 	flag.IntVar(&opts.questionCount, "question-count", 3,
-		"主问题数量（3-20；建议 3-4 控制真实 LLM 成本）")
+		"主问题数量（3-20；建议 3-4 控制真实 LLM 成本；仅 text 模式使用）")
 	flag.StringVar(&opts.skillID, "skill", "java-backend",
-		"面试方向 skillId（须为服务端已注册方向，如 java-backend）")
+		"面试方向 skillId（须为服务端已注册方向，如 java-backend；两种模式共用）")
 	flag.StringVar(&opts.difficulty, "difficulty", "mid",
-		"难度 junior|mid|senior")
+		"难度 junior|mid|senior（两种模式共用）")
 	flag.StringVar(&opts.provider, "provider", "",
-		"llmProvider（留空使用服务端默认 Provider）")
+		"llmProvider（留空使用服务端默认 Provider；两种模式共用）")
 	flag.StringVar(&opts.outDir, "out", os.TempDir(),
-		"PDF 导出目录（默认系统临时目录）")
+		"PDF 导出目录（默认系统临时目录；仅 text 模式使用）")
 	flag.BoolVar(&opts.keep, "keep", false,
-		"保留本次冒烟创建的场次（默认结束时 DELETE 清理）")
+		"保留本次冒烟创建的场次（默认结束时 DELETE 清理；两种模式共用）")
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprint(out, `smoke - 真实 LLM 全链路冒烟命令（票 09，发布前人工验收项）
+		fmt.Fprint(out, `smoke - 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式，发布前人工验收项）
 
-链路：健康检查 → 创建场次（真实出题）→ 题目结构校验 → 模拟作答（含 1 题留空
-覆盖未答题路径）→ 末题自动交卷 → 轮询评估至 COMPLETED → 报告结构校验 →
-问答明细校验 → PDF 导出校验（%PDF 魔数 + 非空）→ DELETE 清理（可用 -keep 跳过）。
+-mode text（默认）文字链路：
+  健康检查 → 创建场次（真实出题）→ 题目结构校验 → 模拟作答（含 1 题留空
+  覆盖未答题路径）→ 末题自动交卷 → 轮询评估至 COMPLETED → 报告结构校验 →
+  问答明细校验 → PDF 导出校验（%PDF 魔数 + 非空）→ DELETE 清理（可用 -keep 跳过）。
+
+-mode voice 语音链路（无麦克风端到端自检）：
+  前置检查 voice_config（真实 ASR/TTS Key 缺失即清晰报错）→ 健康检查 →
+  创建语音场次 → WS 连接收开场白（welcome / asr_ready / 开场白文本 /
+  真实 TTS 开场音频非空）→ 开场音频线性插值重采样 16kHz → 200ms 帧逐帧喂
+  ASR（TTS→重采样→ASR 回环）→ 断言字幕非空 → control submit（携带字幕
+  修正文本）→ 断言 subtitle(final=true)/text(final=true)/audio_chunk/
+  audio_complete → end_interview → 轮询评估至 COMPLETED → 报告必备字段
+  校验 → DELETE 清理（可用 -keep 跳过）。
 
 每步打印校验点与耗时；任一步失败以非零退出码结束，错误信息含步骤名与响应摘要。
 
@@ -102,6 +134,8 @@ func parseFlags() *options {
      数据库 llm_provider_config 表（如 dashscope/qwen3.5-flash），且 API Key 有效；
      可用 -provider 指定，留空用服务端默认。
   3. Postgres / Redis 已运行（dev 环境默认 127.0.0.1:5432 / 6379）。
+  4. （仅 voice 模式）设置页已配置语音服务：voice_config 内 ASR/TTS 参数与
+     真实 DashScope API Key（GET /api/llm-provider/voice/asr|tts 可核对）。
 
 用法：
   go run ./cmd/smoke [flags]
@@ -114,7 +148,7 @@ func parseFlags() *options {
 	return opts
 }
 
-// run 冒烟主流程：逐步执行并在失败时返回含步骤名的错误。
+// run 文字冒烟主流程（票 09，-mode text）：逐步执行并在失败时返回含步骤名的错误。
 func run(opts *options, out io.Writer) error {
 	base := strings.TrimRight(opts.baseURL, "/")
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
@@ -144,7 +178,16 @@ func run(opts *options, out io.Writer) error {
 		{"PDF 导出校验", sm.stepExportPDF},
 		{"清理场次", sm.stepCleanup},
 	}
-	ctx := context.Background()
+	return executeSteps(context.Background(), out, sm, steps)
+}
+
+// executeSteps 步骤化执行框架（text/voice 两种模式共用）：逐步打印、失败即停、
+// 通过后汇总各步耗时。
+func executeSteps(ctx context.Context, out io.Writer, sm *smoke,
+	steps []struct {
+		name string
+		fn   func(context.Context) error
+	}) error {
 	for i, s := range steps {
 		fmt.Fprintf(out, "[%d/%d] %s ...\n", i+1, len(steps), s.name)
 		start := time.Now()
