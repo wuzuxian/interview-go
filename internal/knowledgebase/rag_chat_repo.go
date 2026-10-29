@@ -116,7 +116,8 @@ func (r *ChatRepo) sessionKBIDs(tx *gorm.DB, sessionID int64) ([]int64, error) {
 
 // FindSessionRowsOrderByPinnedUpdatedAtDesc 会话列表（Java
 // findAllOrderByPinnedAndUpdatedAtDesc：ORDER BY is_pinned DESC, updated_at DESC，
-// Postgres DESC 下 NULL 靠前与 Java-on-Postgres 行为一致）。
+// Postgres DESC 下 NULL 靠前与 Java-on-Postgres 行为一致）。关联知识库 ID 一次
+// IN 查询取回后内存分组（输出序仍按 knowledge_base_id 升序），消除逐会话 N+1。
 func (r *ChatRepo) FindSessionRowsOrderByPinnedUpdatedAtDesc(ctx context.Context) ([]RagChatSessionRow, error) {
 	var sessions []RagChatSessionEntity
 	if err := r.db.WithContext(ctx).
@@ -125,10 +126,31 @@ func (r *ChatRepo) FindSessionRowsOrderByPinnedUpdatedAtDesc(ctx context.Context
 		return nil, err
 	}
 	rows := make([]RagChatSessionRow, 0, len(sessions))
+	if len(sessions) == 0 {
+		return rows, nil
+	}
+	sessionIDs := make([]int64, 0, len(sessions))
 	for _, s := range sessions {
-		kbIDs, err := r.sessionKBIDs(r.db.WithContext(ctx), s.ID)
-		if err != nil {
-			return nil, err
+		sessionIDs = append(sessionIDs, s.ID)
+	}
+	var assoc []struct {
+		SessionID int64 `gorm:"column:session_id"`
+		KBID      int64 `gorm:"column:knowledge_base_id"`
+	}
+	if err := r.db.WithContext(ctx).Raw(
+		"SELECT session_id, knowledge_base_id FROM rag_session_knowledge_bases "+
+			"WHERE session_id IN ? ORDER BY session_id, knowledge_base_id",
+		sessionIDs).Scan(&assoc).Error; err != nil {
+		return nil, err
+	}
+	kbIDsBySession := make(map[int64][]int64, len(sessions))
+	for _, a := range assoc {
+		kbIDsBySession[a.SessionID] = append(kbIDsBySession[a.SessionID], a.KBID)
+	}
+	for _, s := range sessions {
+		kbIDs := kbIDsBySession[s.ID]
+		if kbIDs == nil {
+			kbIDs = []int64{}
 		}
 		rows = append(rows, RagChatSessionRow{Session: s, KBIDs: kbIDs})
 	}

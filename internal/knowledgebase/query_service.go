@@ -63,11 +63,10 @@ type Retriever interface {
 	SimilaritySearch(ctx context.Context, query string, kbIDs []int64, topK int, minScore float64) ([]vector.KBDoc, error)
 }
 
-// StreamChunk 流式输出切片；Err 恒为 nil（Java answerQuestionStream 的
-// onErrorResume 把全部错误转成固定错误文案，流本身不出错）。
+// StreamChunk 流式输出切片（Java answerQuestionStream 的 Flux<String> 视图：
+// onErrorResume 把全部错误转成固定错误文案，流本身不出错，故无错误字段）。
 type StreamChunk struct {
 	Text string
-	Err  error
 }
 
 // QueryService RAG 查询服务。

@@ -2,6 +2,7 @@
 // 对应 Java VectorizeStreamConsumer + AbstractStreamConsumer.processMessage：
 // 跳过（缺失/COMPLETED）→ PENDING→PROCESSING 原子领取 → 下载解析（后心跳）→
 // 分批向量化（每批节流心跳 30s）→ 条件写终态；失败按 retryCount 重投（≤3）或置败。
+// 启停与轮询骨架复用 stream_skeleton.go 的 streamLoop（出题消费者同形复用）。
 package knowledgebase
 
 import (
@@ -29,18 +30,14 @@ type Vectorizer interface {
 
 // VectorizeConsumer 向量化消费者。
 type VectorizeConsumer struct {
-	stream     VectorizeStream
+	// streamLoop 共享消费循环骨架（Start/Stop/loop/consumeOnce/ack 与
+	// stream/logger/consumerName 字段经提升复用）。
+	*streamLoop
 	store      Store
 	parser     DocumentParser
 	vectorizer Vectorizer
-	logger     *slog.Logger
 	// heartbeatThrottle Embedding 阶段心跳节流阈值（Java heartbeatThrottle）。
 	heartbeatThrottle time.Duration
-
-	consumerName string
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	doneCh       chan struct{}
 
 	// lastEmbeddingHeartbeat 当前任务的 Embedding 心跳上次写库时间（领取时清零），仅内存态。
 	lastEmbeddingHeartbeatMu sync.Mutex
@@ -49,85 +46,29 @@ type VectorizeConsumer struct {
 
 // NewVectorizeConsumer 创建消费者。
 func NewVectorizeConsumer(stream VectorizeStream, store Store, parser DocumentParser, vectorizer Vectorizer, heartbeatThrottle time.Duration, logger *slog.Logger) *VectorizeConsumer {
-	return &VectorizeConsumer{
-		stream: stream, store: store, parser: parser, vectorizer: vectorizer,
-		logger: logger, heartbeatThrottle: heartbeatThrottle,
-		consumerName: buildVectorizeConsumerName(),
-		stopCh:       make(chan struct{}), doneCh: make(chan struct{}),
+	c := &VectorizeConsumer{
+		store: store, parser: parser, vectorizer: vectorizer,
+		heartbeatThrottle: heartbeatThrottle,
 	}
-}
-
-// Start 启动消费循环（后台 goroutine）。
-func (c *VectorizeConsumer) Start(ctx context.Context) {
-	go func() {
-		defer close(c.doneCh)
-		if err := c.stream.EnsureGroup(ctx); err != nil {
-			c.logger.Warn("创建知识库向量化 Stream Group 失败", slog.String("error", err.Error()))
-		}
-		c.logger.Info("知识库向量化消费者已启动", slog.String("consumer", c.consumerName))
-		c.loop(ctx)
-		c.logger.Info("知识库向量化消费者已停止", slog.String("consumer", c.consumerName))
-	}()
-}
-
-// Stop 停止消费循环（等待退出）。
-func (c *VectorizeConsumer) Stop() {
-	c.stopOnce.Do(func() { close(c.stopCh) })
-	select {
-	case <-c.doneCh:
-	case <-time.After(5 * time.Second):
-	}
-}
-
-func (c *VectorizeConsumer) loop(ctx context.Context) {
-	for {
-		select {
-		case <-c.stopCh:
-			return
-		case <-ctx.Done():
-			return
-		default:
-		}
-		c.consumeOnce(ctx)
-		time.Sleep(PollInterval)
-	}
-}
-
-// consumeOnce 一轮消费：新消息 → pending 认领（宕机恢复语义）。
-func (c *VectorizeConsumer) consumeOnce(ctx context.Context) {
-	msgs, err := c.stream.XReadNew(ctx, c.consumerName, ConsumeBatch)
-	if err != nil {
-		c.logger.Error("消费知识库向量化消息失败", slog.String("error", err.Error()))
-	} else if len(msgs) > 0 {
-		for _, msg := range msgs {
-			c.handleMessage(ctx, msg.ID, msg.Values)
-		}
-		return
-	}
-	claimed, err := c.stream.XClaimPending(ctx, c.consumerName, PendingClaimSize)
-	if err != nil {
-		return
-	}
-	for _, msg := range claimed {
-		c.logger.Info("回收超时 pending 消息", slog.String("messageId", msg.ID))
-		c.handleMessage(ctx, msg.ID, msg.Values)
-	}
+	c.streamLoop = newStreamLoop(stream, logger, "向量化", "回收超时 pending 消息",
+		buildVectorizeConsumerName(), c.handleMessage)
+	return c
 }
 
 // handleMessage 消费骨架（对齐 Java AbstractStreamConsumer.processMessage）。
-func (c *VectorizeConsumer) handleMessage(ctx context.Context, messageID string, values map[string]any) {
-	kbID, retryCount, ok := parseVectorizePayload(values)
+func (c *VectorizeConsumer) handleMessage(ctx context.Context, msg VectorizeMessage) {
+	kbID, retryCount, ok := parseVectorizePayload(msg.Values)
 	if !ok {
-		c.logger.Warn("消息格式错误，跳过", slog.String("messageId", messageID))
-		c.ack(ctx, messageID)
+		c.logger.Warn("消息格式错误，跳过", slog.String("messageId", msg.ID))
+		c.ack(ctx, msg.ID)
 		return
 	}
 	identifier := slog.Int64("kbId", kbID)
 	c.logger.Info("Processing 向量化 task",
-		identifier, slog.String("messageId", messageID), slog.Int("retryCount", retryCount))
+		identifier, slog.String("messageId", msg.ID), slog.Int("retryCount", retryCount))
 
 	if c.shouldSkip(ctx, kbID) {
-		c.ack(ctx, messageID)
+		c.ack(ctx, msg.ID)
 		c.logger.Info("向量化 task skipped", identifier)
 		return
 	}
@@ -136,7 +77,7 @@ func (c *VectorizeConsumer) handleMessage(ctx context.Context, messageID string,
 	attemptID := newAttemptID()
 	claimed, err := c.store.TryMarkVectorProcessing(ctx, kbID, attemptID, time.Now())
 	if err != nil || claimed == 0 {
-		c.ack(ctx, messageID)
+		c.ack(ctx, msg.ID)
 		c.logger.Info("向量化 task was not claimed", identifier)
 		return
 	}
@@ -150,13 +91,13 @@ func (c *VectorizeConsumer) handleMessage(ctx context.Context, messageID string,
 			_, _ = c.store.FailVectorIfProcessing(ctx, kbID, attemptID,
 				taskDisplayName+" failed after retry "+strconv.Itoa(retryCount), time.Now())
 		}
-		c.ack(ctx, messageID)
+		c.ack(ctx, msg.ID)
 		return
 	}
 
 	// 条件写入终态：状态已不是本代次 PROCESSING 时 no-op，防止覆盖他人结果。
 	_, _ = c.store.CompleteVectorIfProcessing(ctx, kbID, attemptID, time.Now())
-	c.ack(ctx, messageID)
+	c.ack(ctx, msg.ID)
 	c.logger.Info("向量化 task completed", identifier)
 }
 
@@ -259,12 +200,6 @@ func (c *VectorizeConsumer) retryMessage(ctx context.Context, kbID int64, attemp
 	}
 	c.logger.Error("重试入队失败", slog.Int64("kbId", kbID), slog.String("error", xerr.Error()))
 	_, _ = c.store.FailVectorIfPending(ctx, kbID, "重试入队失败", time.Now())
-}
-
-func (c *VectorizeConsumer) ack(ctx context.Context, messageID string) {
-	if err := c.stream.XAck(ctx, messageID); err != nil {
-		c.logger.Error("ACK 失败", slog.String("messageId", messageID), slog.String("error", err.Error()))
-	}
 }
 
 // parseVectorizePayload 消息字段解析：kbId 缺失或非数字视为格式错误（ACK 丢弃）。

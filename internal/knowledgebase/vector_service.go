@@ -95,8 +95,8 @@ func (s *VectorizeService) vectorize(ctx context.Context, kbID int64, content st
 	//    source_id 与临时 kb_id（Java 顺序逐字对齐）。
 	metadata := map[string]any{
 		"source_kb_id":        strconv.FormatInt(kbID, 10),
-		"source_name":         orEmpty(source.Name),
-		"source_filename":     orEmpty(source.Filename),
+		"source_name":         source.Name,
+		"source_filename":     source.Filename,
 		metadataChunkStrategy: s.cfg.StrategyVersion,
 	}
 	chunks, err := s.splitter.Transform(ctx, einoDoc(content, metadata))
@@ -163,11 +163,4 @@ func md5Hex(b []byte) string {
 // einoDoc 组装切分输入（Java new Document(content, metadata)）。
 func einoDoc(content string, metadata map[string]any) []*schema.Document {
 	return []*schema.Document{{Content: content, MetaData: metadata}}
-}
-
-func orEmpty(s string) string {
-	if s == "" {
-		return ""
-	}
-	return s
 }

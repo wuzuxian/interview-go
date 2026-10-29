@@ -1,7 +1,7 @@
 // RAG 会话控制器（Java RagChatController 逐字对齐）：8 个接口。
 // 发消息流式：先同步落库用户消息 + AI 占位，SSE data-only 事件换行转义为字面
-// \n；完成回写全文，取消保存已生成部分（空则固定中断文案），错误同（空则固定
-// 错误文案 + e.getMessage()）。
+// \n；完成回写全文，取消保存已生成部分（空则固定中断文案）；上游错误已由查询
+// 管线 onErrorResume 转为流内固定错误文案，无独立错误分支。
 package knowledgebase
 
 import (
@@ -15,11 +15,10 @@ import (
 	"github.com/wuzuxian/interview/internal/result"
 )
 
-// 客户端中断/上游错误时的固定落库文案（Java doOnCancel/doOnError 逐字）。
-const (
-	streamCancelledText = "【已中断】回答生成已取消"
-	streamFailedPrefix  = "【错误】回答生成失败："
-)
+// 客户端中断时的固定落库文案（Java doOnCancel 逐字）。上游错误已由查询管线
+// onErrorResume 转为流内固定错误文案（query_service.go streamErrorText），
+// Go 侧无独立 doOnError 分支。
+const streamCancelledText = "【已中断】回答生成已取消"
 
 // RagChatController RAG 会话路由控制器。
 type RagChatController struct {
@@ -216,13 +215,6 @@ func (ctl *RagChatController) sendMessageStream(c *gin.Context) {
 				ctl.completeDetached(messageID, full.String(), "")
 				ctl.logger.Info("RAG 聊天流式完成",
 					slog.Int64("sessionId", id), slog.Int64("messageId", messageID))
-				return
-			}
-			if chunk.Err != nil {
-				// 上游错误：保存已接收内容，空则固定错误文案（Java doOnError）。
-				ctl.completeDetached(messageID, full.String(), streamFailedPrefix+chunk.Err.Error())
-				ctl.logger.Error("RAG 聊天流式错误",
-					slog.Int64("sessionId", id), slog.String("error", chunk.Err.Error()))
 				return
 			}
 			full.WriteString(chunk.Text)

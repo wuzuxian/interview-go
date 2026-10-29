@@ -3,13 +3,13 @@
 // 条件领取（QUEUED→PROCESSING，taskId 幂等）→ 从配置快照读取参数执行生成 →
 // 失败按 retryCount 重试重投（≤3，重置失败则 ACK 丢弃）→ 耗尽转 FAILED + 安全文案。
 // 恢复调度 60s 巡检：QUEUED 超 2 分钟补投、PROCESSING 超 20 分钟先条件重置再补投。
+// 启停与轮询骨架复用 stream_skeleton.go 的 streamLoop/recoveryLoop（向量化链路同形复用）。
 package knowledgebase
 
 import (
 	"context"
 	"log/slog"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/wuzuxian/interview/internal/apperr"
@@ -29,83 +29,23 @@ type QuestionGenExecutor interface {
 
 // QuestionGenConsumer 出题消费者。
 type QuestionGenConsumer struct {
-	stream   QuestionGenStream
+	// streamLoop 共享消费循环骨架（Start/Stop/loop/consumeOnce/ack 与
+	// stream/logger/consumerName 字段经提升复用）。
+	*streamLoop
 	store    Store
 	gen      QuestionGenExecutor
 	producer *QuestionGenProducer
-	logger   *slog.Logger
-
-	consumerName string
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	doneCh       chan struct{}
 }
 
 // NewQuestionGenConsumer 创建消费者。
 func NewQuestionGenConsumer(stream QuestionGenStream, store Store, gen QuestionGenExecutor,
 	producer *QuestionGenProducer, logger *slog.Logger) *QuestionGenConsumer {
-	return &QuestionGenConsumer{
-		stream: stream, store: store, gen: gen, producer: producer, logger: logger,
-		consumerName: buildQuestionGenConsumerName(),
-		stopCh:       make(chan struct{}), doneCh: make(chan struct{}),
-	}
-}
-
-// Start 启动消费循环（后台 goroutine）。
-func (c *QuestionGenConsumer) Start(ctx context.Context) {
-	go func() {
-		defer close(c.doneCh)
-		if err := c.stream.EnsureGroup(ctx); err != nil {
-			c.logger.Warn("创建知识库出题 Stream Group 失败", slog.String("error", err.Error()))
-		}
-		c.logger.Info("知识库出题消费者已启动", slog.String("consumer", c.consumerName))
-		c.loop(ctx)
-		c.logger.Info("知识库出题消费者已停止", slog.String("consumer", c.consumerName))
-	}()
-}
-
-// Stop 停止消费循环（等待退出）。
-func (c *QuestionGenConsumer) Stop() {
-	c.stopOnce.Do(func() { close(c.stopCh) })
-	select {
-	case <-c.doneCh:
-	case <-time.After(5 * time.Second):
-	}
-}
-
-func (c *QuestionGenConsumer) loop(ctx context.Context) {
-	for {
-		select {
-		case <-c.stopCh:
-			return
-		case <-ctx.Done():
-			return
-		default:
-		}
-		c.consumeOnce(ctx)
-		time.Sleep(PollInterval)
-	}
-}
-
-// consumeOnce 一轮消费：新消息 → pending 认领（宕机恢复语义）。
-func (c *QuestionGenConsumer) consumeOnce(ctx context.Context) {
-	msgs, err := c.stream.XReadNew(ctx, c.consumerName, ConsumeBatch)
-	if err != nil {
-		c.logger.Error("消费知识库出题消息失败", slog.String("error", err.Error()))
-	} else if len(msgs) > 0 {
-		for _, msg := range msgs {
+	c := &QuestionGenConsumer{store: store, gen: gen, producer: producer}
+	c.streamLoop = newStreamLoop(stream, logger, "出题", "回收超时 pending 出题消息",
+		buildQuestionGenConsumerName(), func(ctx context.Context, msg VectorizeMessage) {
 			c.HandleMessage(ctx, msg.ID, msg.Values)
-		}
-		return
-	}
-	claimed, err := c.stream.XClaimPending(ctx, c.consumerName, PendingClaimSize)
-	if err != nil {
-		return
-	}
-	for _, msg := range claimed {
-		c.logger.Info("回收超时 pending 出题消息", slog.String("messageId", msg.ID))
-		c.HandleMessage(ctx, msg.ID, msg.Values)
-	}
+		})
+	return c
 }
 
 // HandleMessage 消费骨架（对齐 Java AbstractStreamConsumer.processMessage 的
@@ -188,12 +128,6 @@ func (c *QuestionGenConsumer) retryMessage(ctx context.Context, kbID int64, task
 	c.producer.SendGenerateTask(ctx, kbID, taskID, nextRetry)
 }
 
-func (c *QuestionGenConsumer) ack(ctx context.Context, messageID string) {
-	if err := c.stream.XAck(ctx, messageID); err != nil {
-		c.logger.Error("ACK 失败", slog.String("messageId", messageID), slog.String("error", err.Error()))
-	}
-}
-
 // parseQuestionGenPayload 消息字段解析：kbId/taskId 缺失或非法视为格式错误（ACK 丢弃）。
 func parseQuestionGenPayload(values map[string]any) (int64, string, int, bool) {
 	raw, exists := values[FieldKBID]
@@ -225,46 +159,19 @@ func parseQuestionGenPayload(values map[string]any) (int64, string, int, bool) {
 
 // QuestionGenRecoveryScheduler 出题卡住任务恢复调度器。
 type QuestionGenRecoveryScheduler struct {
+	// recoveryLoop 共享恢复调度骨架（Start/Stop 与 logger 字段经提升复用）。
+	*recoveryLoop
 	store    Store
 	producer *QuestionGenProducer
-	logger   *slog.Logger
-	stopCh   chan struct{}
-	doneCh   chan struct{}
 }
 
-// NewQuestionGenRecoveryScheduler 创建恢复调度器。
+// NewQuestionGenRecoveryScheduler 创建恢复调度器（Java fixedDelay = initialDelay = 60s）。
 func NewQuestionGenRecoveryScheduler(store Store, producer *QuestionGenProducer, logger *slog.Logger) *QuestionGenRecoveryScheduler {
-	return &QuestionGenRecoveryScheduler{store: store, producer: producer, logger: logger,
-		stopCh: make(chan struct{}), doneCh: make(chan struct{})}
-}
-
-// Start 启动调度（Java fixedDelay = initialDelay = 60s）。
-func (s *QuestionGenRecoveryScheduler) Start(ctx context.Context) {
-	go func() {
-		defer close(s.doneCh)
-		timer := time.NewTimer(time.Minute)
-		defer timer.Stop()
-		for {
-			select {
-			case <-s.stopCh:
-				return
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				s.RecoverStaleTasks(ctx, time.Now())
-				timer.Reset(time.Minute)
-			}
-		}
-	}()
-}
-
-// Stop 停止调度。
-func (s *QuestionGenRecoveryScheduler) Stop() {
-	close(s.stopCh)
-	select {
-	case <-s.doneCh:
-	case <-time.After(3 * time.Second):
-	}
+	s := &QuestionGenRecoveryScheduler{store: store, producer: producer}
+	s.recoveryLoop = newRecoveryLoop(logger, time.Minute, func(ctx context.Context) {
+		s.RecoverStaleTasks(ctx, time.Now())
+	})
+	return s
 }
 
 // RecoverStaleTasks 一轮巡检（now 注入时钟，供测试）。

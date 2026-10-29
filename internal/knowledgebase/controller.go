@@ -7,11 +7,13 @@ package knowledgebase
 
 import (
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wuzuxian/interview/internal/apperr"
 	"github.com/wuzuxian/interview/internal/ratelimit"
 	"github.com/wuzuxian/interview/internal/result"
 )
@@ -261,7 +263,7 @@ func (ctl *Controller) queryKnowledgeBaseStream(c *gin.Context) {
 	}
 	startSSE(c)
 	for chunk := range ctl.query.AnswerQuestionStream(c.Request.Context(), req.KnowledgeBaseIDs, req.Question, nil) {
-		if chunk.Err != nil || c.Request.Context().Err() != nil {
+		if c.Request.Context().Err() != nil {
 			return
 		}
 		if !writeSSEData(c, chunk.Text, false) {
@@ -347,24 +349,19 @@ func javaURLEncode(s string) string {
 	return b.String()
 }
 
-// parseID 路径参数解析为 int64；非法时返回 400。
+// parseID 路径参数 id 解析为 int64（Java @PathVariable Long 的 Long.parseLong
+// 语义）：非数字、超出 int64 范围与负数均返回 400「无效的ID参数」。
 func parseID(c *gin.Context) (int64, bool) {
-	raw := c.Param("id")
-	var id int64
-	neg := false
-	for i, ch := range raw {
-		if i == 0 && ch == '-' {
-			neg = true
-			continue
-		}
-		if ch < '0' || ch > '9' {
-			result.Fail(c, 400, "路径参数 id 非法")
-			return 0, false
-		}
-		id = id*10 + int64(ch-'0')
-	}
-	if neg {
-		id = -id
+	return parsePathID(c, "id")
+}
+
+// parsePathID 路径 ID 解析公共实现（Long.parseLong 语义，另按评审要求拒绝负数）；
+// id 与 questionId 两路径参数共用。
+func parsePathID(c *gin.Context, param string) (int64, bool) {
+	id, err := strconv.ParseInt(c.Param(param), 10, 64)
+	if err != nil || id < 0 {
+		result.Fail(c, apperr.CodeBadRequest, "无效的ID参数")
+		return 0, false
 	}
 	return id, true
 }

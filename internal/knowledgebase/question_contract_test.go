@@ -527,3 +527,27 @@ func TestDeleteQuestion契约(t *testing.T) {
 		t.Fatalf("不存在 code = %d, message = %q", code, message)
 	}
 }
+
+// TestQuestionID路径参数解析契约 parseQuestionID 与 parseID 同语义：
+// 非数字/负数/int64 溢出 → 400「无效的ID参数」（Long.parseLong 语义 + 负数拒绝）。
+func TestQuestionID路径参数解析契约(t *testing.T) {
+	h := newQuestionFixture(t)
+	cases := []struct {
+		name       string
+		questionID string
+	}{
+		{"非数字拒绝", "abc"},
+		{"负数拒绝", "-1"},
+		{"int64溢出拒绝", "99999999999999999999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h.doMethod(t, http.MethodDelete, "/api/knowledgebase/questions/"+tc.questionID, nil)
+			code, message, _ := h.resultRaw(t)
+			if code != apperr.CodeBadRequest || message != "无效的ID参数" {
+				t.Fatalf("questionId=%s: code = %d, message = %q, want %d/无效的ID参数",
+					tc.questionID, code, message, apperr.CodeBadRequest)
+			}
+		})
+	}
+}

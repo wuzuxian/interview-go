@@ -1,13 +1,13 @@
 // 知识库向量化 Redis Stream：常量、消息字段、消费组与生产者，与 Java
-// AsyncTaskStreamConstants 知识库向量化段 + VectorizeStreamProducer/Consumer +
-// AbstractStreamProducer/Consumer 逐字对齐（key/group 与 Java 共库共存，ADR 0005）。
+// AsyncTaskStreamConstants 知识库向量化段 + VectorizeStreamProducer +
+// AbstractStreamProducer 逐字对齐（key/group 与 Java 共库共存，ADR 0005）。
+// Redis 适配器与消费循环骨架在 stream_skeleton.go 共享（出题流同形复用）。
 package knowledgebase
 
 import (
 	"context"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,8 +32,8 @@ const (
 // taskDisplayName 任务显示名（Java taskDisplayName()，FAILED 文案前缀逐字）。
 const taskDisplayName = "向量化"
 
-// VectorizeStream 向量化流最小能力集（生产实现为本文件 redis 适配器，
-// 测试注入内存 fake，先例 internal/voiceinterview/evaluation_consumer.go）。
+// VectorizeStream 向量化流最小能力集（生产实现为 stream_skeleton.go 的共用
+// redis 适配器，测试注入内存 fake，先例 internal/voiceinterview/evaluation_consumer.go）。
 type VectorizeStream interface {
 	EnsureGroup(ctx context.Context) error
 	XAddTask(ctx context.Context, values map[string]any) (string, error)
@@ -48,85 +48,9 @@ type VectorizeMessage struct {
 	Values map[string]any
 }
 
-// redisStream *redis.Client 适配器；XADD 按 MAXLEN 1000 近似裁剪
-// （Java RedisService.streamAdd trimNonStrict）。
-type redisStream struct {
-	rdb *redis.Client
-}
-
-// NewRedisStream 创建 Stream 适配器。
+// NewRedisStream 创建向量化 Stream 适配器。
 func NewRedisStream(rdb *redis.Client) VectorizeStream {
-	return &redisStream{rdb: rdb}
-}
-
-func (s *redisStream) EnsureGroup(ctx context.Context) error {
-	err := s.rdb.XGroupCreateMkStream(ctx, StreamKey, GroupName, "0").Err()
-	if err != nil && !isBusyGroup(err) {
-		return err
-	}
-	return nil
-}
-
-func isBusyGroup(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
-}
-
-func (s *redisStream) XAddTask(ctx context.Context, values map[string]any) (string, error) {
-	return s.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamKey,
-		MaxLen: StreamMaxLen,
-		Approx: true,
-		Values: values,
-	}).Result()
-}
-
-func (s *redisStream) XAck(ctx context.Context, messageID string) error {
-	return s.rdb.XAck(ctx, StreamKey, GroupName, messageID).Err()
-}
-
-func (s *redisStream) XReadNew(ctx context.Context, consumer string, count int64) ([]VectorizeMessage, error) {
-	res, err := s.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    GroupName,
-		Consumer: consumer,
-		Streams:  []string{StreamKey, ">"},
-		Count:    count,
-		Block:    500 * time.Millisecond,
-	}).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil
-		}
-		return nil, err
-	}
-	msgs := []VectorizeMessage{}
-	for _, stream := range res {
-		for _, msg := range stream.Messages {
-			msgs = append(msgs, VectorizeMessage{ID: msg.ID, Values: msg.Values})
-		}
-	}
-	return msgs, nil
-}
-
-func (s *redisStream) XClaimPending(ctx context.Context, consumer string, count int64) ([]VectorizeMessage, error) {
-	claimed, _, err := s.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-		Stream:   StreamKey,
-		Group:    GroupName,
-		Consumer: consumer,
-		MinIdle:  PendingIdleTime,
-		Start:    "0-0",
-		Count:    count,
-	}).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, nil
-		}
-		return nil, err
-	}
-	msgs := make([]VectorizeMessage, 0, len(claimed))
-	for _, msg := range claimed {
-		msgs = append(msgs, VectorizeMessage{ID: msg.ID, Values: msg.Values})
-	}
-	return msgs, nil
+	return newRedisStreamAdapter(rdb, StreamKey, GroupName)
 }
 
 // VectorizeProducer 向量化任务生产者（Java VectorizeStreamProducer + AbstractStreamProducer）。

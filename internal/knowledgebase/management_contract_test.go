@@ -286,6 +286,35 @@ func Test详情契约成功与不存在(t *testing.T) {
 	}
 }
 
+// Test路径参数ID解析契约 parseID 对齐 Java @PathVariable Long 的 Long.parseLong
+// 语义：非数字/负数/int64 溢出 → 400「无效的ID参数」；int64 上界放行给业务层
+// （不存在照常 500「知识库不存在」）。
+func Test路径参数ID解析契约(t *testing.T) {
+	h := newContractFixture(t)
+	cases := []struct {
+		name     string
+		id       string
+		wantCode int
+		wantMsg  string
+	}{
+		{"非数字拒绝", "abc", apperr.CodeBadRequest, "无效的ID参数"},
+		{"数字混非法字符拒绝", "12x", apperr.CodeBadRequest, "无效的ID参数"},
+		{"负数拒绝", "-5", apperr.CodeBadRequest, "无效的ID参数"},
+		{"int64溢出拒绝", "9223372036854775808", apperr.CodeBadRequest, "无效的ID参数"},
+		{"int64上界放行业务层", "9223372036854775807", 500, "知识库不存在"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h.doMethod(t, http.MethodGet, "/api/knowledgebase/"+tc.id, nil)
+			code, message, _ := h.resultRaw(t)
+			if code != tc.wantCode || message != tc.wantMsg {
+				t.Fatalf("id=%s: code = %d, message = %q, want %d/%q",
+					tc.id, code, message, tc.wantCode, tc.wantMsg)
+			}
+		})
+	}
+}
+
 // ===== delete =====
 
 // Test删除契约补偿顺序 事务内摘关联删记录 → 事务外删向量 → 删对象存储文件，

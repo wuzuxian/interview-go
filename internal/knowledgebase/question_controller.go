@@ -57,7 +57,7 @@ func (ctl *QuestionController) generateQuestions(c *gin.Context) {
 		LLMProvider   *string `json:"llmProvider"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		result.Fail(c, 400, "请求体格式不正确")
+		result.Fail(c, apperr.CodeBadRequest, "请求体格式不正确")
 		return
 	}
 	if violations := generateViolations(body.Difficulty, body.QuestionCount, body.FollowUpCount,
@@ -183,7 +183,7 @@ func (ctl *QuestionController) createQuestion(c *gin.Context) {
 	}
 	var req CreateQuestionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		result.Fail(c, 400, "请求体格式不正确")
+		result.Fail(c, apperr.CodeBadRequest, "请求体格式不正确")
 		return
 	}
 	dto, err := ctl.svc.CreateQuestion(c.Request.Context(), id, req)
@@ -202,7 +202,7 @@ func (ctl *QuestionController) updateQuestion(c *gin.Context) {
 	}
 	var req UpdateQuestionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		result.Fail(c, 400, "请求体格式不正确")
+		result.Fail(c, apperr.CodeBadRequest, "请求体格式不正确")
 		return
 	}
 	dto, err := ctl.svc.UpdateQuestion(c.Request.Context(), questionID, req)
@@ -223,11 +223,11 @@ func (ctl *QuestionController) updateQuestionStatus(c *gin.Context) {
 		Status *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		result.Fail(c, 400, "请求体格式不正确")
+		result.Fail(c, apperr.CodeBadRequest, "请求体格式不正确")
 		return
 	}
 	if body.Status == nil {
-		result.Fail(c, 400, "题目状态不能为空")
+		result.Fail(c, apperr.CodeBadRequest, "题目状态不能为空")
 		return
 	}
 	status, err := parseQuestionStatus(*body.Status)
@@ -256,24 +256,8 @@ func (ctl *QuestionController) deleteQuestion(c *gin.Context) {
 	result.OK(c, nil)
 }
 
-// parseQuestionID 路径参数 questionId 解析为 int64；非法时返回 400。
+// parseQuestionID 路径参数 questionId 解析为 int64（同 parseID 的 Long.parseLong
+// 语义）：非数字、超出 int64 范围与负数均返回 400「无效的ID参数」。
 func parseQuestionID(c *gin.Context) (int64, bool) {
-	raw := c.Param("questionId")
-	var id int64
-	neg := false
-	for i, ch := range raw {
-		if i == 0 && ch == '-' {
-			neg = true
-			continue
-		}
-		if ch < '0' || ch > '9' {
-			result.Fail(c, 400, "路径参数 questionId 非法")
-			return 0, false
-		}
-		id = id*10 + int64(ch-'0')
-	}
-	if neg {
-		id = -id
-	}
-	return id, true
+	return parsePathID(c, "questionId")
 }

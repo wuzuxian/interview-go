@@ -2,6 +2,7 @@
 // 60s 巡检；PENDING 超阈值补投；PROCESSING 超阈值无心跳先条件重置回 PENDING 再补投；
 // recovery_count 达上限转 FAILED。恢复前条件更新原子推进 vector_updated_at，
 // 保证一个调度周期内同一实体只补投一次；外部投递在事务外完成。
+// 启停骨架复用 stream_skeleton.go 的 recoveryLoop（出题恢复调度同形复用）。
 package knowledgebase
 
 import (
@@ -13,47 +14,20 @@ import (
 
 // RecoveryScheduler 恢复调度器。
 type RecoveryScheduler struct {
+	// recoveryLoop 共享恢复调度骨架（Start/Stop 与 logger 字段经提升复用）。
+	*recoveryLoop
 	store    Store
 	producer *VectorizeProducer
 	cfg      RecoveryConfig
-	logger   *slog.Logger
-	stopCh   chan struct{}
-	doneCh   chan struct{}
 }
 
 // NewRecoveryScheduler 创建恢复调度器。
 func NewRecoveryScheduler(store Store, producer *VectorizeProducer, cfg RecoveryConfig, logger *slog.Logger) *RecoveryScheduler {
-	return &RecoveryScheduler{store: store, producer: producer, cfg: cfg, logger: logger,
-		stopCh: make(chan struct{}), doneCh: make(chan struct{})}
-}
-
-// Start 启动调度（初始延迟 = Interval）。
-func (s *RecoveryScheduler) Start(ctx context.Context) {
-	go func() {
-		defer close(s.doneCh)
-		timer := time.NewTimer(s.cfg.Interval)
-		defer timer.Stop()
-		for {
-			select {
-			case <-s.stopCh:
-				return
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				s.RecoverStuckTasks(ctx, time.Now())
-				timer.Reset(s.cfg.Interval)
-			}
-		}
-	}()
-}
-
-// Stop 停止调度。
-func (s *RecoveryScheduler) Stop() {
-	close(s.stopCh)
-	select {
-	case <-s.doneCh:
-	case <-time.After(3 * time.Second):
-	}
+	s := &RecoveryScheduler{store: store, producer: producer, cfg: cfg}
+	s.recoveryLoop = newRecoveryLoop(logger, cfg.Interval, func(ctx context.Context) {
+		s.RecoverStuckTasks(ctx, time.Now())
+	})
+	return s
 }
 
 // RecoverStuckTasks 一轮巡检（now 注入时钟，供测试）。
