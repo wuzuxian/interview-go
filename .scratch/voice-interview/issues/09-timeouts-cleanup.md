@@ -4,7 +4,7 @@
 
 **Blocked by:** 04（网关连接状态与断开路径）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 活动时间判定对齐（任何上行消息刷新）；4:30 预警一场连接只推一次；5:00 触发暂停
 - [ ] 超时暂停完整路径：pause_timeout 下发 → 会话 PAUSED（timeout 原因落库）→ 服务端关闭连接 → ASR 停止

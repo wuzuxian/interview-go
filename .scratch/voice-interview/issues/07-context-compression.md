@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（消息仓储与边界列）, 06（回合管道取历史点）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 加载器：正确装配 摘要行 + 边界后原文窗口（20 轮）+ 识别待摘要批（≤10 条）；旧无边界 SUMMARY 行的边界迁移语义对齐 Java
 - [ ] WINDOW 模式仅取最近窗口；SUMMARY 模式增量摘要并推进边界；触发判定（字符预算超限）正确

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03（TTS 客户端）, 04（网关）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] voice-interview-opening.yml 资产拷贝嵌入（9 方向 + 算法/后端默认）；无匹配方向时走默认文案
 - [ ] 无历史消息的会话建连后自动收到开场：text(final=true) 先于音频；开场消息先落库（DIALOGUE、对应阶段、序号）再推送

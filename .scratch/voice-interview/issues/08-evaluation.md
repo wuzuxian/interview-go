@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（会话/消息仓储与投递）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 问答配对：pendingQuestion 状态机（连续提问累积、回答回填最近未答）、分类推断关键词表对齐 Java inferCategory；只处理 DIALOGUE 行
 - [ ] 评估明细 DTO 与文字面试明细逐字对齐：sessionId/totalQuestions/overallScore/overallFeedback/strengths/improvements/answers[]，AnswerDetail 七字段（questionIndex/question/category/userAnswer/score/feedback/referenceAnswer/keyPoints）

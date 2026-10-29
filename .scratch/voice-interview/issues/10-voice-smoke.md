@@ -4,7 +4,7 @@
 
 **Blocked by:** 01–09（全部）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] -mode 默认 text，既有文字冒烟行为与 flags 完全不变
 - [ ] voice 模式步骤化输出（对齐既有 smoke 风格），任一步失败即停并给出非零退出码

@@ -4,7 +4,7 @@
 
 **Blocked by:** None（可立即开始）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] POST /api/voice-interview/sessions 响应字段 sessionId/roleType/currentPhase/status/startTime/plannedDuration/webSocketUrl 逐字对齐；webSocketUrl 为相对路径 `/ws/voice-interview/{id}`
 - [ ] 创建默认值对齐：introEnabled=false、tech/project/hrEnabled=true、plannedDuration=30、skillId 缺省取默认方向、roleType 向后兼容可空；difficulty 取值 junior/mid/senior

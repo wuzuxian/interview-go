@@ -4,7 +4,7 @@
 
 **Blocked by:** None（可立即开始）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 单次合成闭环：连服务端 → 提交文本（含 model/voice/format/sampleRate/mode/languageType/speechRate/volume 运行时参数）→ 收齐增量音频 → 返回完整 PCM；每次合成独立新建连接，前一次失败不影响下一次
 - [ ] 建连超时 5s：服务端挂起握手时按超时失败（对齐 Java）

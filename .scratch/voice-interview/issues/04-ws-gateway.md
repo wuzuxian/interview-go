@@ -4,7 +4,7 @@
 
 **Blocked by:** 01（会话服务与消息仓储）, 02（ASR 客户端）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 建连校验会话存在与状态；welcome / asr_ready 控制消息形状逐字对齐；ASR 建连慢时推 asr_reconnecting，10s×2 次重试仍失败推 error
 - [ ] 上行 `{"type":"audio","data":...}` 解码转发 ASR；ASR 未就绪期间音频帧静默丢弃

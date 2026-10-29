@@ -4,7 +4,7 @@
 
 **Blocked by:** None（可立即开始）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 客户端可连配置指定的任意 ws:// / wss:// 地址；握手携带鉴权与运行时参数（URL/模型/语言/format/采样率/打断检测开关与阈值，来自语音配置源）
 - [ ] 会话更新参数对齐：modalities=TEXT、server_vad 开、静音时长默认 2000ms（配置可覆盖）

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03（TTS 客户端）, 04（网关回合挂钩）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 语音模型解析接缝（本特性唯一新增接缝之一）：按场次 llmProvider（空 → 默认）解析流式模型；aibridge 生产实现、测试注入 stub 流
 - [ ] 流式出句：终止标点（。！？；!?;.）切分；节流推送部分帧、final 帧携带完整回复；不产生句子的短回复走整段路径
