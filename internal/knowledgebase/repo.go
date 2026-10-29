@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -43,6 +44,29 @@ type Store interface {
 	// + VectorRepository 的 delete/promote/deleteByJobId）。
 	ActivateVectorJobAndUpdateSnapshot(ctx context.Context, kbID int64, attemptID, jobID string, chunkCount int, vectorConfig string) error
 	DeleteVectorsByJobID(ctx context.Context, jobID string) error
+
+	// ===== 管理接口（票 02，查询语义逐条对齐 Java KnowledgeBaseRepository 派生查询）=====
+
+	FindAllOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error)
+	FindByVectorStatusOrderByUploadedAtDesc(ctx context.Context, status VectorStatus) ([]KnowledgeBaseEntity, error)
+	FindAllCategories(ctx context.Context) ([]string, error)
+	FindByCategoryOrderByUploadedAtDesc(ctx context.Context, category string) ([]KnowledgeBaseEntity, error)
+	FindByCategoryIsNullOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error)
+	SearchByKeyword(ctx context.Context, keyword string) ([]KnowledgeBaseEntity, error)
+	UpdateCategory(ctx context.Context, id int64, category *string) error
+	CountKnowledgeBases(ctx context.Context) (int64, error)
+	CountByVectorStatus(ctx context.Context, status VectorStatus) (int64, error)
+	SumAccessCount(ctx context.Context) (int64, error)
+	// CountUserRagMessages 统计 RAG 会话 USER 消息数（Java stats 的总提问次数：
+	// ragChatMessageRepository.countByType(MessageType.USER)，多知识库提问只算一次）。
+	CountUserRagMessages(ctx context.Context) (int64, error)
+
+	// DeleteKnowledgeBaseRecords 事务内删除：先摘 RAG 会话关联（防 FK 失败）再删记录，
+	// 返回 storageKey 供事务外补偿删除对象存储文件（Java KnowledgeBaseDeleteService）。
+	DeleteKnowledgeBaseRecords(ctx context.Context, id int64) (*string, error)
+	// DeleteVectorsByKBID 事务外删除正式向量（按 metadata kb_id，兼容 kb_id_long 旧键；
+	// Java VectorRepository.deleteByKnowledgeBaseId）。
+	DeleteVectorsByKBID(ctx context.Context, id int64) error
 }
 
 // Repo GORM 实现。
@@ -279,4 +303,139 @@ func truncateError(msg string, max int) string {
 		return string(r[:max])
 	}
 	return msg
+}
+
+// ===== 管理接口（票 02）=====
+
+// FindAllOrderByUploadedAtDesc 全量列表（Java findAllByOrderByUploadedAtDesc）。
+func (r *Repo) FindAllOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Order("uploaded_at DESC").Find(&list).Error
+	return list, err
+}
+
+// FindByVectorStatusOrderByUploadedAtDesc 按向量状态过滤（Java 同名派生查询）。
+func (r *Repo) FindByVectorStatusOrderByUploadedAtDesc(ctx context.Context, status VectorStatus) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Where("vector_status = ?", status).Order("uploaded_at DESC").Find(&list).Error
+	return list, err
+}
+
+// FindAllCategories 全部分类：去重、非空、按分类升序（Java findAllCategories JPQL 逐字）。
+func (r *Repo) FindAllCategories(ctx context.Context) ([]string, error) {
+	var list []string
+	err := r.db.WithContext(ctx).Raw(
+		"SELECT DISTINCT category FROM knowledge_bases WHERE category IS NOT NULL ORDER BY category",
+	).Scan(&list).Error
+	if err != nil {
+		return nil, err
+	}
+	if list == nil {
+		list = []string{}
+	}
+	return list, nil
+}
+
+// FindByCategoryOrderByUploadedAtDesc 按分类浏览。
+func (r *Repo) FindByCategoryOrderByUploadedAtDesc(ctx context.Context, category string) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Where("category = ?", category).Order("uploaded_at DESC").Find(&list).Error
+	return list, err
+}
+
+// FindByCategoryIsNullOrderByUploadedAtDesc 未分类浏览。
+func (r *Repo) FindByCategoryIsNullOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Where("category IS NULL").Order("uploaded_at DESC").Find(&list).Error
+	return list, err
+}
+
+// SearchByKeyword 名称或原文件名模糊搜索，不区分大小写（Java searchByKeyword JPQL：
+// LOWER(...) LIKE LOWER(CONCAT('%', :keyword, '%'))，通配符不过转义，行为一致）。
+func (r *Repo) SearchByKeyword(ctx context.Context, keyword string) ([]KnowledgeBaseEntity, error) {
+	pattern := "%" + strings.ToLower(keyword) + "%"
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).
+		Where("LOWER(name) LIKE ? OR LOWER(original_filename) LIKE ?", pattern, pattern).
+		Order("uploaded_at DESC").Find(&list).Error
+	return list, err
+}
+
+// UpdateCategory 设置分类：先查后改，不存在返回 6001（Java updateCategory）；
+// category nil 落 NULL（Java setCategory(blank → null)）。
+func (r *Repo) UpdateCategory(ctx context.Context, id int64, category *string) error {
+	var row KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).First(&row, id).Error
+	if err == gorm.ErrRecordNotFound {
+		return ErrKnowledgeBaseNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id = ?", id).
+		Update("category", category).Error
+}
+
+// CountKnowledgeBases 知识库总数（Java count()）。
+func (r *Repo) CountKnowledgeBases(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Count(&n).Error
+	return n, err
+}
+
+// CountByVectorStatus 按向量状态计数（Java countByVectorStatus）。
+func (r *Repo) CountByVectorStatus(ctx context.Context, status VectorStatus) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("vector_status = ?", status).Count(&n).Error
+	return n, err
+}
+
+// SumAccessCount 访问总数（Java sumAccessCount：COALESCE(SUM(access_count), 0)）。
+func (r *Repo) SumAccessCount(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Raw(
+		"SELECT COALESCE(SUM(access_count), 0) FROM knowledge_bases").Scan(&n).Error
+	return n, err
+}
+
+// CountUserRagMessages RAG 会话 USER 消息数（Java stats 总提问次数口径：
+// ragChatMessageRepository.countByType(MessageType.USER)，多知识库提问只算一次）。
+func (r *Repo) CountUserRagMessages(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Raw(
+		"SELECT COUNT(*) FROM rag_chat_messages WHERE type = 'USER'").Scan(&n).Error
+	return n, err
+}
+
+// DeleteKnowledgeBaseRecords 事务内删除：摘 RAG 会话关联 → 删知识库记录，
+// 返回 storageKey（Java deleteKnowledgeBaseRecords；不存在按 Java NOT_FOUND(404) + "知识库不存在"）。
+func (r *Repo) DeleteKnowledgeBaseRecords(ctx context.Context, id int64) (*string, error) {
+	var storageKey *string
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row KnowledgeBaseEntity
+		err := tx.First(&row, id).Error
+		if err == gorm.ErrRecordNotFound {
+			return apperr.New(apperr.CodeNotFound, "知识库不存在")
+		}
+		if err != nil {
+			return err
+		}
+		storageKey = row.StorageKey
+		// Java：先逐会话移除关联再删记录，防止外键约束阻止删除。
+		if err := tx.Exec("DELETE FROM rag_session_knowledge_bases WHERE knowledge_base_id = ?", id).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&KnowledgeBaseEntity{}, id).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return storageKey, nil
+}
+
+// DeleteVectorsByKBID 事务外删除正式向量（SQL 与 Java VectorRepository
+// .deleteByKnowledgeBaseId 逐字对齐，兼容 kb_id_long 旧键；失败以 6005 抛出，
+// 由删除服务吞掉仅记日志）。
+func (r *Repo) DeleteVectorsByKBID(ctx context.Context, id int64) error {
+	return deleteVectorsByKBID(r.db.WithContext(ctx), id)
 }

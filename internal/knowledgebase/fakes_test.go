@@ -11,8 +11,11 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/wuzuxian/interview/internal/apperr"
 )
 
 // ===== 动作记录器 =====
@@ -84,6 +87,13 @@ type fakeStore struct {
 	// deleteAfterFind 首次 FindByID 正常、其后返回不存在（模拟 skip 后删除窗口）。
 	deleteAfterFind bool
 	findCalls       int
+
+	// deleteVectorsErr DeleteVectorsByKBID 脚本化失败（删除补偿链测试）。
+	deleteVectorsErr error
+	// userRagMessages RAG 会话 USER 消息数（stats totalQuestionCount 口径）。
+	userRagMessages int64
+	// ragJoinRows RAG 会话-知识库关联（sessionID 集合按 kbID 索引），删除补偿链断言用。
+	ragJoinRows map[int64]map[int64]bool
 }
 
 type vectorRow struct {
@@ -92,7 +102,7 @@ type vectorRow struct {
 }
 
 func newFakeStore(rec *actionRecorder) *fakeStore {
-	return &fakeStore{rec: rec, kbs: map[int64]*KnowledgeBaseEntity{}, nextID: 100}
+	return &fakeStore{rec: rec, kbs: map[int64]*KnowledgeBaseEntity{}, ragJoinRows: map[int64]map[int64]bool{}, nextID: 100}
 }
 
 func (s *fakeStore) addKB(kb *KnowledgeBaseEntity) int64 {
@@ -414,6 +424,192 @@ func (s *fakeStore) vectorRows() []vectorRow {
 	return append([]vectorRow(nil), s.vectors...)
 }
 
+// ===== fakeStore 管理查询/删除（票 02，内存镜像 Java 派生查询语义）=====
+
+// listByUploadedAtDesc 全部实体按 uploadedAt 倒序快照。
+func (s *fakeStore) listByUploadedAtDesc() []KnowledgeBaseEntity {
+	out := make([]KnowledgeBaseEntity, 0, len(s.kbs))
+	for _, kb := range s.kbs {
+		out = append(out, *kb)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UploadedAt.After(out[j].UploadedAt) })
+	return out
+}
+
+func (s *fakeStore) FindAllOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listByUploadedAtDesc(), nil
+}
+
+func (s *fakeStore) FindByVectorStatusOrderByUploadedAtDesc(ctx context.Context, status VectorStatus) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseEntity
+	for _, kb := range s.listByUploadedAtDesc() {
+		if kb.VectorStatus == status {
+			out = append(out, kb)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) FindAllCategories(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[string]bool{}
+	var out []string
+	for _, kb := range s.kbs {
+		if kb.Category == nil || seen[*kb.Category] {
+			continue
+		}
+		seen[*kb.Category] = true
+		out = append(out, *kb.Category)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *fakeStore) FindByCategoryOrderByUploadedAtDesc(ctx context.Context, category string) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseEntity
+	for _, kb := range s.listByUploadedAtDesc() {
+		if kb.Category != nil && *kb.Category == category {
+			out = append(out, kb)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) FindByCategoryIsNullOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseEntity
+	for _, kb := range s.listByUploadedAtDesc() {
+		if kb.Category == nil {
+			out = append(out, kb)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) SearchByKeyword(ctx context.Context, keyword string) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lower := strings.ToLower(keyword)
+	var out []KnowledgeBaseEntity
+	for _, kb := range s.listByUploadedAtDesc() {
+		if strings.Contains(strings.ToLower(kb.Name), lower) ||
+			strings.Contains(strings.ToLower(kb.OriginalFilename), lower) {
+			out = append(out, kb)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) UpdateCategory(ctx context.Context, id int64, category *string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[id]
+	if !ok {
+		return ErrKnowledgeBaseNotFound
+	}
+	kb.Category = category
+	return nil
+}
+
+func (s *fakeStore) CountKnowledgeBases(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int64(len(s.kbs)), nil
+}
+
+func (s *fakeStore) CountByVectorStatus(ctx context.Context, status VectorStatus) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for _, kb := range s.kbs {
+		if kb.VectorStatus == status {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *fakeStore) SumAccessCount(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for _, kb := range s.kbs {
+		n += int64(derefInt(kb.AccessCount))
+	}
+	return n, nil
+}
+
+func (s *fakeStore) CountUserRagMessages(ctx context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.userRagMessages, nil
+}
+
+// addUserRagMessages 累加 USER 消息数（统计契约测试）。
+func (s *fakeStore) addUserRagMessages(n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.userRagMessages += n
+}
+
+// addRagAssociation 记录会话-知识库关联（删除补偿链测试）。
+func (s *fakeStore) addRagAssociation(kbID, sessionID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ragJoinRows[kbID] == nil {
+		s.ragJoinRows[kbID] = map[int64]bool{}
+	}
+	s.ragJoinRows[kbID][sessionID] = true
+}
+
+// ragAssociationCount 剩余关联数（断言摘除）。
+func (s *fakeStore) ragAssociationCount(kbID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ragJoinRows[kbID])
+}
+
+// DeleteKnowledgeBaseRecords 内存镜像事务内删除：摘关联 → 删记录 → 返回 storageKey。
+func (s *fakeStore) DeleteKnowledgeBaseRecords(ctx context.Context, id int64) (*string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.add("delete-kb-records:" + itoa(id))
+	kb, ok := s.kbs[id]
+	if !ok {
+		return nil, apperr.New(apperr.CodeNotFound, "知识库不存在")
+	}
+	delete(s.ragJoinRows, id)
+	delete(s.kbs, id)
+	return kb.StorageKey, nil
+}
+
+// DeleteVectorsByKBID 内存镜像向量删除（按 metadata kb_id）；脚本化失败返回 6005。
+func (s *fakeStore) DeleteVectorsByKBID(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec.add("delete-vectors-by-kb:" + itoa(id))
+	if s.deleteVectorsErr != nil {
+		return apperr.Wrap(apperr.CodeKnowledgeBaseDeleteFailed, "删除向量数据失败", s.deleteVectorsErr)
+	}
+	kept := s.vectors[:0]
+	for _, row := range s.vectors {
+		if row.metadata[metadataKBID] == strconv.FormatInt(id, 10) {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	s.vectors = kept
+	return nil
+}
+
 // ===== fakeStream =====
 
 type fakeStream struct {
@@ -493,6 +689,7 @@ func (s *fakeStream) addCount() int {
 // ===== fakeStorage =====
 
 type fakeStorage struct {
+	rec         *actionRecorder
 	mu          sync.Mutex
 	objects     map[string][]byte
 	uploaded    []string
@@ -502,8 +699,8 @@ type fakeStorage struct {
 	downloadErr error
 }
 
-func newFakeStorage() *fakeStorage {
-	return &fakeStorage{objects: map[string][]byte{}}
+func newFakeStorage(rec *actionRecorder) *fakeStorage {
+	return &fakeStorage{rec: rec, objects: map[string][]byte{}}
 }
 
 func (s *fakeStorage) UploadKnowledgeBase(ctx context.Context, fileName, contentType string, data []byte) (string, error) {
@@ -521,6 +718,9 @@ func (s *fakeStorage) UploadKnowledgeBase(ctx context.Context, fileName, content
 func (s *fakeStorage) DeleteKnowledgeBase(ctx context.Context, fileKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.rec != nil {
+		s.rec.add("delete-storage-object:" + fileKey)
+	}
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
@@ -537,7 +737,8 @@ func (s *fakeStorage) Download(ctx context.Context, fileKey string) ([]byte, err
 	}
 	data, ok := s.objects[fileKey]
 	if !ok {
-		return nil, errors.New("not found")
+		// 与生产 internal/storage.Download 同构：缺失对象 4002 + 同文案。
+		return nil, apperr.New(apperr.CodeStorageDownloadFail, "文件不存在: "+fileKey)
 	}
 	return append([]byte(nil), data...), nil
 }
@@ -551,6 +752,24 @@ func (s *fakeStorage) has(key string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.objects[key]
 	return ok
+}
+
+// putObject 直写对象（下载契约测试用）。
+func (s *fakeStorage) putObject(key string, data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objects[key] = append([]byte(nil), data...)
+}
+
+// objectBytes 读取对象内容（下载契约断言用）。
+func (s *fakeStorage) objectBytes(key string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[key]
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), data...), true
 }
 
 // ===== fakeVectors =====
@@ -669,7 +888,7 @@ func newKBFixture() *kbFixture {
 		rec:     rec,
 		store:   store,
 		stream:  newFakeStream(rec),
-		storage: newFakeStorage(),
+		storage: newFakeStorage(rec),
 		vectors: &fakeVectors{store: store},
 		parser:  &fakeParser{},
 		vec:     &fakeVectorizer{},

@@ -72,7 +72,10 @@ func newContractFixture(t *testing.T) *contractFixture {
 	f := &contractFixture{f: newUploadFixture(4), recorder: httptest.NewRecorder()}
 	f.engine = gin.New()
 	api := f.engine.Group("/api")
-	ctl := NewController(f.f.svc, ratelimit.New(errScripter{}, discardLogger()))
+	ctl := NewController(f.f.svc,
+		NewListService(f.f.store, f.f.storage, discardLogger()),
+		NewDeleteService(f.f.store, f.f.storage, discardLogger()),
+		ratelimit.New(errScripter{}, discardLogger()))
 	ctl.RegisterRoutes(api)
 	return f
 }

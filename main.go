@@ -353,7 +353,10 @@ func main() {
 	defer kbRecovery.Stop()
 	kbUpload := knowledgebase.NewUploadService(kbRepo, storeSvc, kbProducer,
 		appCfg.KnowledgeBase.MaxFileSize, appCfg.KnowledgeBase.MaxConcurrent, slogger)
-	kbCtl := knowledgebase.NewController(kbUpload, rl)
+	// 管理接口（票 02）：列表/详情/删除/分类/搜索/统计/下载。
+	kbList := knowledgebase.NewListService(kbRepo, storeSvc, slogger)
+	kbDelete := knowledgebase.NewDeleteService(kbRepo, storeSvc, slogger)
+	kbCtl := knowledgebase.NewController(kbUpload, kbList, kbDelete, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

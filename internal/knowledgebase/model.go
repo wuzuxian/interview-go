@@ -14,6 +14,10 @@ const (
 	VectorFailed     VectorStatus = "FAILED"
 )
 
+// QuestionGenNone 出题状态初始值（Java QuestionGenStatus.NONE，
+// V20260724 列 DEFAULT 'NONE'；状态流转随票 03 接入）。
+const QuestionGenNone = "NONE"
+
 // KnowledgeBaseEntity 对应表 knowledge_bases（Java schema，应用不做迁移，ADR 0001；
 // question_gen_* 列随票 03 出题状态机接入）。
 type KnowledgeBaseEntity struct {
@@ -38,6 +42,10 @@ type KnowledgeBaseEntity struct {
 	VectorUpdatedAt     *time.Time   `gorm:"column:vector_updated_at"`
 	VectorRecoveryCount int          `gorm:"column:vector_recovery_count;not null;default:0"`
 	VectorAttemptID     *string      `gorm:"column:vector_attempt_id;size:36"`
+	// 出题状态机列（Java V20260724 迁移，DEFAULT 'NONE'）；状态流转随票 03 接入，
+	// 列表/详情 DTO 契约（questionGenStatus/questionGenError）自票 02 起透出。
+	QuestionGenStatus string  `gorm:"column:question_gen_status;size:20;not null;default:NONE"`
+	QuestionGenError  *string `gorm:"column:question_gen_error;size:500"`
 }
 
 func (KnowledgeBaseEntity) TableName() string { return "knowledge_bases" }
