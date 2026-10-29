@@ -155,11 +155,11 @@ func (c *TtsClient) synthesize(ctx context.Context, settings TtsSettings, text s
 		}
 
 		switch event.Type {
-		case "response.audio.delta": // Java L361-371：delta 为 base64 音频分片
+		case "response.audio.delta": // Java L361-371：delta 为 base64 音频增量帧
 			if event.Delta != "" {
 				chunk, err := base64.StdEncoding.DecodeString(event.Delta)
 				if err != nil {
-					return nil, fmt.Errorf("TTS 音频分片 base64 解码失败: %w", err)
+					return nil, fmt.Errorf("TTS 音频增量帧 base64 解码失败: %w", err)
 				}
 				pcm.append(chunk)
 			}
@@ -250,7 +250,7 @@ type ttsSessionConfig struct {
 // 同样只 switch type 并按需取 delta/error）。
 type ttsServerEvent struct {
 	Type  string          `json:"type"`
-	Delta string          `json:"delta"` // response.audio.delta 的 base64 音频分片
+	Delta string          `json:"delta"` // response.audio.delta 的 base64 音频增量帧
 	Error json.RawMessage `json:"error"` // error 事件负载；可能为 JSON 对象或字符串
 }
 

@@ -57,7 +57,7 @@ type TurnSpeaker interface {
 
 // TurnInput 回合挂钩入参。
 type TurnInput struct {
-	SessionID int64       // 语音会话 ID
+	SessionID int64       // 语音面试场次 ID
 	UserText  string      // 提交的用户话语（合并缓冲原文，Java accumulatedText）
 	Speaker   TurnSpeaker // 下行发送通道
 }

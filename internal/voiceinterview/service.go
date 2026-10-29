@@ -197,7 +197,7 @@ func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest) (
 func (s *Service) getSession(ctx context.Context, sessionID int64) (*SessionEntity, error) {
 	cached, err := s.cache.Get(ctx, sessionID)
 	if err != nil {
-		s.logger.Warn("读语音会话缓存失败，回源 DB",
+		s.logger.Warn("读语音面试场次缓存失败，回源 DB",
 			slog.Int64("sessionId", sessionID), slog.String("error", err.Error()))
 	}
 	if cached != nil {
@@ -683,14 +683,14 @@ func (s *Service) UpdateEvaluateStatus(ctx context.Context, sessionID int64, sta
 
 func (s *Service) cacheSession(ctx context.Context, e *SessionEntity) {
 	if err := s.cache.Save(ctx, entityToCached(e)); err != nil {
-		s.logger.Warn("写语音会话缓存失败",
+		s.logger.Warn("写语音面试场次缓存失败",
 			slog.Int64("sessionId", e.ID), slog.String("error", err.Error()))
 	}
 }
 
 func (s *Service) invalidateSessionCache(ctx context.Context, sessionID int64) {
 	if err := s.cache.Invalidate(ctx, sessionID); err != nil {
-		s.logger.Warn("失效语音会话缓存失败",
+		s.logger.Warn("失效语音面试场次缓存失败",
 			slog.Int64("sessionId", sessionID), slog.String("error", err.Error()))
 	}
 }
