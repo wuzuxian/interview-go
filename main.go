@@ -366,6 +366,22 @@ func main() {
 	kbChat := knowledgebase.NewRagChatService(kbRepo, kbChatRepo, kbQuery, appCfg.KnowledgeBase.Query, slogger)
 	kbCtl := knowledgebase.NewController(kbUpload, kbList, kbDelete, kbQuery, rl)
 	kbChatCtl := knowledgebase.NewRagChatController(kbChat, slogger)
+	// 题库异步出题（票 04）：taskId 幂等 → Redis Stream（knowledgebase:question-gen:stream /
+	// question-gen-group，消息字段 kbId/taskId/retryCount）→ 4 组固定检索构造上下文 →
+	// 结构化输出（复用 ai.StructuredInvoker，失败带修复提示重试）→ replace 小事务。
+	// 可选 llmProvider 经 aibridge 的 JSONChatModelFor 接缝解析（先例 interview resolver）。
+	kbQStream := knowledgebase.NewQuestionGenStream(rdb.Client)
+	kbQProducer := knowledgebase.NewQuestionGenProducer(kbQStream, kbRepo, slogger)
+	kbQGen := knowledgebase.NewQuestionGenerationService(kbRepo, vecStore, bridge, invoker,
+		interview.NewPromptSanitizer(slogger), slogger)
+	kbQConsumer := knowledgebase.NewQuestionGenConsumer(kbQStream, kbRepo, kbQGen, kbQProducer, slogger)
+	kbQConsumer.Start(ctx)
+	defer kbQConsumer.Stop()
+	kbQRecovery := knowledgebase.NewQuestionGenRecoveryScheduler(kbRepo, kbQProducer, slogger)
+	kbQRecovery.Start(ctx)
+	defer kbQRecovery.Stop()
+	kbQuestionSvc := knowledgebase.NewQuestionService(kbRepo, kbQProducer, slogger)
+	kbQuestionCtl := knowledgebase.NewQuestionController(kbQuestionSvc, rl)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
@@ -389,6 +405,7 @@ func main() {
 	voiceCtl.RegisterRoutes(api)
 	kbCtl.RegisterRoutes(api)
 	kbChatCtl.RegisterRoutes(api)
+	kbQuestionCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

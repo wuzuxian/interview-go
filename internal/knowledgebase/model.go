@@ -14,12 +14,8 @@ const (
 	VectorFailed     VectorStatus = "FAILED"
 )
 
-// QuestionGenNone 出题状态初始值（Java QuestionGenStatus.NONE，
-// V20260724 列 DEFAULT 'NONE'；状态流转随票 03 接入）。
-const QuestionGenNone = "NONE"
-
 // KnowledgeBaseEntity 对应表 knowledge_bases（Java schema，应用不做迁移，ADR 0001；
-// question_gen_* 列随票 03 出题状态机接入）。
+// 出题状态机列随票 04 接入状态流转）。
 type KnowledgeBaseEntity struct {
 	ID                  int64        `gorm:"column:id;primaryKey;autoIncrement"`
 	FileHash            string       `gorm:"column:file_hash;size:64;not null;uniqueIndex:idx_kb_hash"`
@@ -42,10 +38,15 @@ type KnowledgeBaseEntity struct {
 	VectorUpdatedAt     *time.Time   `gorm:"column:vector_updated_at"`
 	VectorRecoveryCount int          `gorm:"column:vector_recovery_count;not null;default:0"`
 	VectorAttemptID     *string      `gorm:"column:vector_attempt_id;size:36"`
-	// 出题状态机列（Java V20260724 迁移，DEFAULT 'NONE'）；状态流转随票 03 接入，
-	// 列表/详情 DTO 契约（questionGenStatus/questionGenError）自票 02 起透出。
-	QuestionGenStatus string  `gorm:"column:question_gen_status;size:20;not null;default:NONE"`
-	QuestionGenError  *string `gorm:"column:question_gen_error;size:500"`
+	// 出题状态机列（Java V20260724 迁移，DEFAULT 'NONE'）。
+	QuestionGenStatus       QuestionGenStatus `gorm:"column:question_gen_status;size:20;not null;default:NONE"`
+	QuestionGenError        *string           `gorm:"column:question_gen_error;size:500"`
+	QuestionGenTaskID       *string           `gorm:"column:question_gen_task_id;size:36"`
+	QuestionGenConfig       *string           `gorm:"column:question_gen_config;type:text"`
+	QuestionGenMessage      *string           `gorm:"column:question_gen_message;size:500"`
+	QuestionGenSavedCount   int               `gorm:"column:question_gen_saved_count;not null;default:0"`
+	QuestionGenSkippedCount int               `gorm:"column:question_gen_skipped_count;not null;default:0"`
+	QuestionGenUpdatedAt    *time.Time        `gorm:"column:question_gen_updated_at"`
 }
 
 func (KnowledgeBaseEntity) TableName() string { return "knowledge_bases" }

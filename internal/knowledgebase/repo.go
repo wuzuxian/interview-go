@@ -73,6 +73,39 @@ type Store interface {
 
 	// IncrementQuestionCountBatch 提问计数单条 SQL 批量 +1。
 	IncrementQuestionCountBatch(ctx context.Context, ids []int64) error
+
+	// ===== 题库与出题状态机（票 04，Java KnowledgeBaseQuestionRepository +
+	// QuestionGenerationStateService 的事务边界）=====
+
+	FindQuestionsByKBOrderByUpdatedAtDesc(ctx context.Context, kbID int64) ([]KnowledgeBaseQuestionEntity, error)
+	FindQuestionsByKBAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error)
+	// FindCategoryCounts 方向统计：非空方向计数，count 降序、category 升序（Java JPQL 逐字）。
+	FindCategoryCounts(ctx context.Context, kbID int64) ([]CategoryCount, error)
+	// FindTop20QuestionsByKBAndDifficultyOrderByUpdatedAtDesc 出题防重复段（Java findTop20...）。
+	FindTop20QuestionsByKBAndDifficultyOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty string) ([]KnowledgeBaseQuestionEntity, error)
+	FindQuestionByID(ctx context.Context, id int64) (*KnowledgeBaseQuestionEntity, error)
+	InsertQuestion(ctx context.Context, q *KnowledgeBaseQuestionEntity) error
+	UpdateQuestion(ctx context.Context, q *KnowledgeBaseQuestionEntity) error
+	DeleteQuestionByID(ctx context.Context, id int64) error
+
+	// CreateQuestionGenTask 创建出题任务：锁内校验向量完成 + 状态空闲 →
+	// QUEUED + taskId + 配置快照（Java QuestionGenerationStateService.createTask）。
+	CreateQuestionGenTask(ctx context.Context, kbID int64, taskID, configJSON string, now time.Time) (*KnowledgeBaseEntity, error)
+	// TryMarkQuestionProcessing QUEUED → PROCESSING 条件领取（taskId 仍匹配）。
+	TryMarkQuestionProcessing(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error)
+	// ResetQuestionForRetry PROCESSING → QUEUED 条件重置（重试路径）。
+	ResetQuestionForRetry(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error)
+	// MarkQuestionGenFailed 任务未被替换且未完成 → FAILED + 安全文案。
+	MarkQuestionGenFailed(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error)
+	// ReplaceQuestionsAndComplete replace 小事务：taskId 仍匹配且 PROCESSING →
+	// 删旧题 → 存新题 → COMPLETED + saved/skipped/message；被替换返回 false。
+	ReplaceQuestionsAndComplete(ctx context.Context, kbID int64, taskID string, questions []KnowledgeBaseQuestionEntity, skippedCount int, now time.Time) (bool, error)
+	// TouchQueuedQuestionForRecovery 恢复补投前原子推进时间（QUEUED 且早于阈值）。
+	TouchQueuedQuestionForRecovery(ctx context.Context, kbID int64, taskID string, threshold, now time.Time) (bool, error)
+	// ResetStaleQuestionProcessing PROCESSING 超阈值无进展 → QUEUED。
+	ResetStaleQuestionProcessing(ctx context.Context, kbID int64, taskID string, threshold, now time.Time) (bool, error)
+	// FindStaleQuestionGenTasks 卡住出题任务扫描（Java findStaleQuestionGenerationTasks）。
+	FindStaleQuestionGenTasks(ctx context.Context, status QuestionGenStatus, threshold time.Time, limit int) ([]KnowledgeBaseEntity, error)
 }
 
 // Repo GORM 实现。

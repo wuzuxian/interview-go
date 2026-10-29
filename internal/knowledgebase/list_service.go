@@ -263,7 +263,7 @@ func toListItemDTO(e *KnowledgeBaseEntity) KnowledgeBaseListItemDTO {
 		VectorStatus:      string(e.VectorStatus),
 		VectorError:       e.VectorError,
 		ChunkCount:        e.ChunkCount,
-		QuestionGenStatus: genStatus,
+		QuestionGenStatus: string(genStatus),
 		QuestionGenError:  e.QuestionGenError,
 	}
 }

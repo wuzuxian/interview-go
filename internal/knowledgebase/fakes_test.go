@@ -76,6 +76,9 @@ type fakeStore struct {
 	vectors []vectorRow
 	nextID  int64
 
+	questions      map[int64]*KnowledgeBaseQuestionEntity
+	questionNextID int64
+
 	insertErr           error
 	activateErr         error
 	deleteJobErr        error
@@ -94,6 +97,9 @@ type fakeStore struct {
 	userRagMessages int64
 	// ragJoinRows RAG 会话-知识库关联（sessionID 集合按 kbID 索引），删除补偿链断言用。
 	ragJoinRows map[int64]map[int64]bool
+
+	// failResetForRetry 脚本化 ResetQuestionForRetry 失败（条件重置不命中：任务已被替换）。
+	failResetForRetry bool
 }
 
 type vectorRow struct {
@@ -102,7 +108,8 @@ type vectorRow struct {
 }
 
 func newFakeStore(rec *actionRecorder) *fakeStore {
-	return &fakeStore{rec: rec, kbs: map[int64]*KnowledgeBaseEntity{}, ragJoinRows: map[int64]map[int64]bool{}, nextID: 100}
+	return &fakeStore{rec: rec, kbs: map[int64]*KnowledgeBaseEntity{}, ragJoinRows: map[int64]map[int64]bool{},
+		questions: map[int64]*KnowledgeBaseQuestionEntity{}, nextID: 100, questionNextID: 900}
 }
 
 func (s *fakeStore) addKB(kb *KnowledgeBaseEntity) int64 {
@@ -906,6 +913,7 @@ type kbFixture struct {
 	rec     *actionRecorder
 	store   *fakeStore
 	stream  *fakeStream
+	qstream *fakeStream
 	storage *fakeStorage
 	vectors *fakeVectors
 	parser  *fakeParser
@@ -920,6 +928,7 @@ func newKBFixture() *kbFixture {
 		rec:     rec,
 		store:   store,
 		stream:  newFakeStream(rec),
+		qstream: newFakeStream(rec),
 		storage: newFakeStorage(rec),
 		vectors: &fakeVectors{store: store},
 		parser:  &fakeParser{},
@@ -971,3 +980,307 @@ func pad64(s string) string {
 
 // itoa int64 → 十进制字符串（测试断言用）。
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+// ===== fakeStore 题库与出题状态机（票 04，内存镜像 Java 事务语义）=====
+
+// addQuestion 落一行题目，返回 ID。
+func (s *fakeStore) addQuestion(q *KnowledgeBaseQuestionEntity) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.questionNextID++
+	q.ID = s.questionNextID
+	s.questions[q.ID] = q
+	return q.ID
+}
+
+// questionsOf 某知识库的题目快照（updatedAt 倒序，镜像列表查询）。
+func (s *fakeStore) questionsOf(kbID int64) []KnowledgeBaseQuestionEntity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.questionsFiltered(kbID, nil)
+}
+
+// questionsFiltered status 过滤版本的快照（updatedAt 倒序，同刻以 ID 倒序定序，
+// 镜像 Java 查询在自增主键下的稳定输出）。
+func (s *fakeStore) questionsFiltered(kbID int64, status *QuestionBankStatus) []KnowledgeBaseQuestionEntity {
+	var out []KnowledgeBaseQuestionEntity
+	for _, q := range s.questions {
+		if q.KnowledgeBaseID != kbID {
+			continue
+		}
+		if status != nil && q.Status != *status {
+			continue
+		}
+		out = append(out, *q)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out
+}
+
+// questionCount 某知识库题目数（断言用）。
+func (s *fakeStore) questionCount(kbID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, q := range s.questions {
+		if q.KnowledgeBaseID == kbID {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *fakeStore) FindQuestionsByKBOrderByUpdatedAtDesc(ctx context.Context, kbID int64) ([]KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.questionsFiltered(kbID, nil), nil
+}
+
+func (s *fakeStore) FindQuestionsByKBAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.questionsFiltered(kbID, &status), nil
+}
+
+func (s *fakeStore) FindCategoryCounts(ctx context.Context, kbID int64) ([]CategoryCount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	counts := map[string]int64{}
+	for _, q := range s.questions {
+		if q.KnowledgeBaseID != kbID || q.Category == nil || *q.Category == "" {
+			continue
+		}
+		counts[*q.Category]++
+	}
+	out := make([]CategoryCount, 0, len(counts))
+	for category, count := range counts {
+		out = append(out, CategoryCount{Category: category, Count: count})
+	}
+	// Java JPQL：count 降序、category 升序。
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Category < out[j].Category
+	})
+	return out, nil
+}
+
+func (s *fakeStore) FindTop20QuestionsByKBAndDifficultyOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty string) ([]KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseQuestionEntity
+	for _, q := range s.questions {
+		if q.KnowledgeBaseID == kbID && q.Difficulty != nil && *q.Difficulty == difficulty {
+			out = append(out, *q)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out, nil
+}
+
+func (s *fakeStore) FindQuestionByID(ctx context.Context, id int64) (*KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q, ok := s.questions[id]
+	if !ok {
+		return nil, ErrQuestionNotFound
+	}
+	cp := *q
+	return &cp, nil
+}
+
+func (s *fakeStore) InsertQuestion(ctx context.Context, q *KnowledgeBaseQuestionEntity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.questionNextID++
+	q.ID = s.questionNextID
+	s.questions[q.ID] = q
+	return nil
+}
+
+func (s *fakeStore) UpdateQuestion(ctx context.Context, q *KnowledgeBaseQuestionEntity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.questions[q.ID]; !ok {
+		return ErrQuestionNotFound
+	}
+	cp := *q
+	s.questions[q.ID] = &cp
+	return nil
+}
+
+func (s *fakeStore) DeleteQuestionByID(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.questions[id]; !ok {
+		return ErrQuestionNotFound
+	}
+	delete(s.questions, id)
+	return nil
+}
+
+// CreateQuestionGenTask 内存镜像 Java createTask：锁内校验向量完成 + 状态空闲，
+// 写入 QUEUED + taskId + 配置快照；校验失败返回业务错误。
+func (s *fakeStore) CreateQuestionGenTask(ctx context.Context, kbID int64, taskID, configJSON string, now time.Time) (*KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok {
+		return nil, ErrKnowledgeBaseNotFound
+	}
+	if kb.VectorStatus != VectorCompleted {
+		return nil, apperr.New(apperr.CodeBadRequest, "知识库尚未完成向量化")
+	}
+	if kb.QuestionGenStatus == QuestionGenQueued || kb.QuestionGenStatus == QuestionGenProcessing {
+		return nil, apperr.New(apperr.CodeBadRequest, "知识库问题正在生成中，请勿重复提交")
+	}
+	kb.QuestionGenTaskID = stringPtr(taskID)
+	kb.QuestionGenStatus = QuestionGenQueued
+	kb.QuestionGenConfig = stringPtr(configJSON)
+	kb.QuestionGenError = nil
+	kb.QuestionGenMessage = nil
+	kb.QuestionGenSavedCount = 0
+	kb.QuestionGenSkippedCount = 0
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	cp := *kb
+	return &cp, nil
+}
+
+func (s *fakeStore) TryMarkQuestionProcessing(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID || kb.QuestionGenStatus != QuestionGenQueued {
+		return false, nil
+	}
+	kb.QuestionGenStatus = QuestionGenProcessing
+	kb.QuestionGenError = nil
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+func (s *fakeStore) ResetQuestionForRetry(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failResetForRetry {
+		return false, nil
+	}
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID || kb.QuestionGenStatus != QuestionGenProcessing {
+		return false, nil
+	}
+	kb.QuestionGenStatus = QuestionGenQueued
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+func (s *fakeStore) MarkQuestionGenFailed(ctx context.Context, kbID int64, taskID string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID {
+		return false, nil
+	}
+	if kb.QuestionGenStatus == QuestionGenCompleted {
+		return false, nil
+	}
+	kb.QuestionGenStatus = QuestionGenFailed
+	kb.QuestionGenError = stringPtr(safeFailureMessage)
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+// ReplaceQuestionsAndComplete 内存镜像 Java replaceQuestionsAndComplete 小事务：
+// 锁内校验 taskId 仍匹配且状态 PROCESSING → 删旧题 → 存新题（DRAFT）→ COMPLETED。
+func (s *fakeStore) ReplaceQuestionsAndComplete(ctx context.Context, kbID int64, taskID string, questions []KnowledgeBaseQuestionEntity, skippedCount int, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID || kb.QuestionGenStatus != QuestionGenProcessing {
+		return false, nil
+	}
+	for id, q := range s.questions {
+		if q.KnowledgeBaseID == kbID {
+			delete(s.questions, id)
+		}
+	}
+	for i := range questions {
+		s.questionNextID++
+		q := questions[i]
+		q.ID = s.questionNextID
+		s.questions[q.ID] = &q
+	}
+	message := "已生成 " + strconv.Itoa(len(questions)) + " 道题"
+	if skippedCount > 0 {
+		message = "已生成 " + strconv.Itoa(len(questions)) + " 道题，跳过 " + strconv.Itoa(skippedCount) + " 道重复题"
+	}
+	kb.QuestionGenStatus = QuestionGenCompleted
+	kb.QuestionGenError = nil
+	kb.QuestionGenMessage = stringPtr(message)
+	kb.QuestionGenSavedCount = len(questions)
+	kb.QuestionGenSkippedCount = skippedCount
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+func (s *fakeStore) TouchQueuedQuestionForRecovery(ctx context.Context, kbID int64, taskID string, threshold, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID ||
+		kb.QuestionGenStatus != QuestionGenQueued ||
+		(kb.QuestionGenUpdatedAt != nil && !kb.QuestionGenUpdatedAt.Before(threshold)) {
+		return false, nil
+	}
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+func (s *fakeStore) ResetStaleQuestionProcessing(ctx context.Context, kbID int64, taskID string, threshold, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kb, ok := s.kbs[kbID]
+	if !ok || kb.QuestionGenTaskID == nil || *kb.QuestionGenTaskID != taskID ||
+		kb.QuestionGenStatus != QuestionGenProcessing ||
+		(kb.QuestionGenUpdatedAt != nil && !kb.QuestionGenUpdatedAt.Before(threshold)) {
+		return false, nil
+	}
+	kb.QuestionGenStatus = QuestionGenQueued
+	kb.QuestionGenUpdatedAt = timePtr(now)
+	return true, nil
+}
+
+func (s *fakeStore) FindStaleQuestionGenTasks(ctx context.Context, status QuestionGenStatus, threshold time.Time, limit int) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseEntity
+	for _, kb := range s.kbs {
+		if kb.QuestionGenStatus != status {
+			continue
+		}
+		if kb.QuestionGenUpdatedAt == nil || !kb.QuestionGenUpdatedAt.Before(threshold) {
+			continue
+		}
+		out = append(out, *kb)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, tj := out[i].QuestionGenUpdatedAt, out[j].QuestionGenUpdatedAt
+		if ti == nil || tj == nil {
+			return tj == nil
+		}
+		return ti.Before(*tj)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}

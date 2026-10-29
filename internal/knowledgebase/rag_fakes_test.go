@@ -98,11 +98,14 @@ type fakeChatModel struct {
 
 	generateInputs [][]*schema.Message
 	streamInputs   [][]*schema.Message
+	// hookAfterGenerate 首次 Generate 返回后触发（模拟 LLM 调用窗口内的实体变更）。
+	hookAfterGenerate func()
 }
 
 func (m *fakeChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	m.mu.Lock()
 	m.generateInputs = append(m.generateInputs, input)
+	callIndex := len(m.generateInputs)
 	var out genOutcome
 	if len(m.generateQueue) > 0 {
 		out = m.generateQueue[0]
@@ -111,7 +114,12 @@ func (m *fakeChatModel) Generate(ctx context.Context, input []*schema.Message, o
 		m.mu.Unlock()
 		return nil, errors.New("fakeChatModel: Generate 队列为空")
 	}
+	hook := m.hookAfterGenerate
 	m.mu.Unlock()
+	// 钩子只在首次 Generate 返回后触发（模拟 LLM 调用窗口内的实体变更）。
+	if hook != nil && callIndex == 1 {
+		hook()
+	}
 	if out.err != nil {
 		return nil, out.err
 	}
