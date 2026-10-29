@@ -18,17 +18,21 @@ import (
 
 // Controller 日程控制器。
 type Controller struct {
-	svc *Service
+	svc      *Service
+	parseSvc *ParseService
 }
 
-// NewController 创建控制器（解析接口随票 02 接入）。
-func NewController(svc *Service) *Controller { return &Controller{svc: svc} }
+// NewController 创建控制器。
+func NewController(svc *Service, parseSvc *ParseService) *Controller {
+	return &Controller{svc: svc, parseSvc: parseSvc}
+}
 
 // RegisterRoutes 注册路由（基路径 /api/interview-schedule，与 Java
 // @RequestMapping 对齐；状态接口 PATCH 与 PUT 双 method 同 handler，Java
 // @RequestMapping(method={PATCH, PUT})）。
 func (h *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	r := g.Group("/interview-schedule")
+	r.POST("/parse", h.parse)
 	r.POST("", h.create)
 	r.GET("", h.list)
 	r.GET("/:id", h.getByID)
@@ -36,6 +40,23 @@ func (h *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	r.DELETE("/:id", h.remove)
 	r.PATCH("/:id/status", h.updateStatus)
 	r.PUT("/:id/status", h.updateStatus)
+}
+
+// parse 解析面试邀约文本（rawText 必填，@NotBlank「文本不能为空」）。
+func (h *Controller) parse(c *gin.Context) {
+	var req ParseRequest
+	if !bindJSON(c, &req) {
+		return
+	}
+	if strings.TrimSpace(req.RawText) == "" {
+		result.Fail(c, apperr.CodeBadRequest, "文本不能为空")
+		return
+	}
+	source := ""
+	if req.Source != nil {
+		source = *req.Source
+	}
+	result.OK(c, h.parseSvc.Parse(req.RawText, source))
 }
 
 // create 创建日程。

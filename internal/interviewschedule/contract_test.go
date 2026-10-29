@@ -23,7 +23,8 @@ func newScheduleRouter(store Store) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := r.Group("/api")
-	NewController(NewService(store, slog.New(slog.NewTextHandler(io.Discard, nil)))).RegisterRoutes(api)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	NewController(NewService(store, logger), NewParseService(logger)).RegisterRoutes(api)
 	return r
 }
 
@@ -71,8 +72,8 @@ func TestCreate强制PENDING与字段契约(t *testing.T) {
 	store := newFakeStore()
 	r := newScheduleRouter(store)
 	code, out := doJSON(t, r, http.MethodPost, "/api/interview-schedule", map[string]any{
-		"companyName": "阿里巴巴",
-		"position":    "Java工程师",
+		"companyName":   "阿里巴巴",
+		"position":      "Java工程师",
 		"interviewTime": "2026-04-10T14:00",
 		// 客户端试图指定状态/轮次：状态必须被忽略，轮次透传
 		"status":      "COMPLETED",
