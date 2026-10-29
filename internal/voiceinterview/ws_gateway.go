@@ -821,7 +821,9 @@ type wsSink struct {
 	ch           chan []byte
 	done         chan struct{}
 	once         sync.Once
-	writeMu      sync.Mutex // 串行化 writeLoop 与 sendSync 的底层写（gorilla 不允许并发写）
+	writeMu      sync.Mutex  // 串行化 writeLoop 与 sendSync 的底层写（gorilla 不允许并发写）
+	sendMu       sync.Mutex  // 串行化 send 的空闲直写判定与直写（对齐 Java session 级 synchronized）
+	sending      atomic.Bool // 写协程是否正在写（Java sendInProgress）
 	pending      atomic.Int64
 	limit        int64
 	writeTimeout time.Duration
@@ -847,13 +849,25 @@ func newWSSink(p wsSinkParams) *wsSink {
 	return s
 }
 
-// send 入队一条下行消息；已关闭安全丢弃，积压超限按不可靠连接关闭（Java
-// ConcurrentWebSocketSessionDecorator 的 bufferLimit 语义：超限关闭会话）。
+// send 发送一条下行消息；已关闭安全丢弃。
+// 语义对齐 Java ConcurrentWebSocketSessionDecorator：写协程空闲且无积压时单条
+// 消息同步直写、不受积压上限约束（Java 直写快路径——空闲连接上的单条大消息如
+// 942KB 开场音频必须可达，bug4 教训）；发送中的排队堆积才按 bufferLimit 判限，
+// 超限判定连接不可靠并关闭。
 func (s *wsSink) send(msg []byte) {
 	select {
 	case <-s.done:
 		return // 会话关闭后安全丢弃
 	default:
+	}
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if !s.sending.Load() && s.pending.Load() == 0 {
+		if err := s.sendSync(msg); err != nil && !s.isClosed() {
+			s.logger.Warn("下行直写失败，关闭连接", slog.String("error", err.Error()))
+			s.close()
+		}
+		return
 	}
 	if s.pending.Add(int64(len(msg))) > s.limit {
 		s.pending.Add(-int64(len(msg)))
@@ -875,11 +889,15 @@ func (s *wsSink) writeLoop() {
 	for {
 		select {
 		case msg := <-s.ch:
+			// 先置 sending 再扣积压，保证「sending=false 且 pending=0」时队列确为空
+			// （send 的直写快路径判定依赖这一不变式）。
+			s.sending.Store(true)
 			s.pending.Add(-int64(len(msg)))
 			s.writeMu.Lock()
 			_ = s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 			err := s.conn.WriteMessage(websocket.TextMessage, msg)
 			s.writeMu.Unlock()
+			s.sending.Store(false)
 			if err != nil {
 				s.logger.Warn("下行消息发送失败，关闭连接", slog.String("error", err.Error()))
 				s.close()

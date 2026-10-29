@@ -76,19 +76,44 @@ func TestWSSink发送与关闭后安全丢弃(t *testing.T) {
 	}
 }
 
-// 积压超限关闭连接（Java bufferLimit 语义：超限判定连接不可靠并关闭）；
-// 关闭后的发送安全丢弃。
+// 空闲直写快路径：无发送中且无积压时，单条大消息不受积压上限约束
+// （Java ConcurrentWebSocketSessionDecorator 直写快路径；bug4 回归——
+// 942KB 开场音频曾因入队后按字节数判限被误杀连接）。
+func TestWSSink空闲单条大消息不受积压上限(t *testing.T) {
+	clientConn, sink := newTestSink(t, 64) // 上限仅 64 字节
+
+	big := make([]byte, 1<<20) // 1MB >> 64B 上限
+	sink.send(big)
+	if sink.isClosed() {
+		t.Fatal("空闲连接上的单条大消息不应触发积压上限")
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := clientConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("大消息应完整可达: %v", err)
+	}
+	if len(data) != len(big) {
+		t.Fatalf("消息长度不符: %d != %d", len(data), len(big))
+	}
+	if sink.isClosed() {
+		t.Fatal("发送后连接不应被关闭")
+	}
+}
+
+// 积压超限关闭连接（Java bufferLimit 语义：仅作用于发送中的排队堆积，
+// 超限判定连接不可靠并关闭）；关闭后的发送安全丢弃。
 func TestWSSink积压超限关闭连接(t *testing.T) {
 	_, sink := newTestSink(t, 64) // 上限 64 字节
 
-	// 客户端不读取，写出阻塞后队列积压；累计字节超过上限 → 连接被关闭。
-	big := make([]byte, 100)
-	for i := 0; i < 50 && !sink.isClosed(); i++ {
-		sink.send(big)
-		time.Sleep(5 * time.Millisecond)
-	}
+	// 白盒注入「发送中」：直写快路径被禁止，消息只能入队并按字节数判限。
+	// （真实世界的阻塞写依赖对端不读取与内核缓冲耗尽，大小随环境浮动，
+	// 以标志注入取代以保证确定性。）
+	sink.sending.Store(true)
+
+	small := make([]byte, 100)
+	sink.send(small) // 100B > 64B 上限 → 判限关闭
 	if !sink.isClosed() {
-		t.Fatal("积压超限应关闭连接")
+		t.Fatal("发送中积压超限应关闭连接")
 	}
-	sink.send(big) // 关闭后安全丢弃
+	sink.send(small) // 关闭后安全丢弃
 }
