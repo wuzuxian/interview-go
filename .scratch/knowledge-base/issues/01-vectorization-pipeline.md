@@ -17,3 +17,18 @@
 - [ ] Redis Stream 与 Java 逐字一致：knowledgebase:vectorize:stream / vectorize-group / 字段 kbId；重试 3 次、拉取 batch 10、pending 认领空闲 5 分钟、stream maxlen 1000
 - [ ] 恢复调度器 60s 巡检：PENDING 超 10 分钟补投、PROCESSING 超 15 分钟无心跳先条件重置再补投、recovery_count≥3 转 FAILED；revectorize 接口清零恢复计数重新领取（限流 GLOBAL=2/IP=2）
 - [ ] 测试：纯函数缝（切分黄金用例、RTF 剥离、动态参数）、Redis/恢复缝（fakeStream/fakeCache/fakeStore 接口 fake）、HTTP 契约缝（上传接口）；DB 条件更新 SQL 语义不在单测覆盖范围，由票 05 的 smoke 真库兜底
+
+## Comments
+
+### 实现留痕（2026-10-29，分支 kb-01-vectorization-pipeline，合并 c2480e4）
+
+验收全过，`go build/vet/test` 全绿。切分器黄金用例由 Java 真实类（gradle 缓存中 spring-ai-commons 2.0.0 + jtokkit 1.1.0 反射）生成，22 例 Go 输出逐字节一致；cl100k_base 词表从 jtokkit jar 提取 go:embed。
+
+与 Java 的偏离（收口时记入 spec 偏离清单）：
+1. PDF/DOC 解析引擎差异（spec 已预案）：Go 双路 pdftotext/纯 Go 替代 Tika，提取文本空白/排版细节不同。
+2. RTF 编码范围：支持 `\uN`/UTF-8 序列/cp1252；`ansicpg936` 原生 GBK 字节流可能乱码（需 x/text 依赖，超票面授权未引入）。
+3. 5MB 文本上限实现点：Java 在 Tika 写入流中中断，Go 解析完成后整体校验拒绝——外部契约相同（解析失败），失败点略后。
+4. tokenizer 特殊 token：jtokkit 对 `<|endoftext|>` 等抛异常，Go 对齐为返回错误走向量化失败路径。
+5. fileKey 文件名净化：Java 转拼音大驼峰，Go 沿 resumes 先例替换为下划线（仅影响存储键美观）。
+6. cleanText 首尾修剪用 Go TrimSpace（Unicode 空白集合比 Java strip 略宽）。
+7. Stream maxlen 近似裁剪、心跳 monotonic clock、promote+快照合并为单事务（Java attemptId 形态同）。
