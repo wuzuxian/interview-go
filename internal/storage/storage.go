@@ -133,6 +133,33 @@ func (s *Service) UploadResume(ctx context.Context, fileName string, contentType
 
 // DeleteResume 删除简历文件；键为空或对象不存在时静默跳过。
 func (s *Service) DeleteResume(ctx context.Context, fileKey string) error {
+	return s.deleteObject(ctx, fileKey)
+}
+
+// UploadKnowledgeBase 上传知识库文件（键前缀 knowledgebases/），返回 fileKey。
+func (s *Service) UploadKnowledgeBase(ctx context.Context, fileName string, contentType string, data []byte) (string, error) {
+	key := generateFileKey(fileName, "knowledgebases")
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.cfg.Bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(data),
+		ContentType:   aws.String(contentType),
+		ContentLength: aws.Int64(int64(len(data))),
+	})
+	if err != nil {
+		return "", apperr.Wrap(apperr.CodeStorageUploadFailed, "文件存储失败", err)
+	}
+	s.logger.Info("文件上传成功", slog.String("filename", fileName), slog.String("key", key))
+	return key, nil
+}
+
+// DeleteKnowledgeBase 删除知识库文件；键为空或对象不存在时静默跳过。
+func (s *Service) DeleteKnowledgeBase(ctx context.Context, fileKey string) error {
+	return s.deleteObject(ctx, fileKey)
+}
+
+// deleteObject 删除对象；键为空或对象不存在时静默跳过。
+func (s *Service) deleteObject(ctx context.Context, fileKey string) error {
 	if fileKey == "" {
 		return nil
 	}

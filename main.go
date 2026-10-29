@@ -18,6 +18,8 @@ import (
 	"github.com/wuzuxian/interview/internal/aibridge"
 	"github.com/wuzuxian/interview/internal/httpx"
 	"github.com/wuzuxian/interview/internal/interview"
+	"github.com/wuzuxian/interview/internal/knowledgebase"
+	"github.com/wuzuxian/interview/internal/knowledgebase/textsplit"
 	"github.com/wuzuxian/interview/internal/llmprovider"
 	"github.com/wuzuxian/interview/internal/migration"
 	"github.com/wuzuxian/interview/internal/ratelimit"
@@ -51,9 +53,11 @@ type AppConfig struct {
 	// Interview 模拟面试配置段（app.interview），结构定义在 interview 包内与业务同处。
 	Interview interview.Config `config:"interview"`
 	// VoiceInterview 语音面试配置段（app.voice_interview），结构定义在
-	// voiceinterview 包内；默认值随票在 config.go 的 default 标签里逐票补齐。
+	// voiceinterview 包内与业务同处；默认值随票在 config.go 的 default 标签里逐票补齐。
 	VoiceInterview voiceinterview.Config `config:"voice_interview"`
-	Storage        struct {
+	// KnowledgeBase 知识库配置段（app.knowledgebase），结构定义在 knowledgebase 包内。
+	KnowledgeBase knowledgebase.Config `config:"knowledgebase"`
+	Storage       struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
 		SecretKey        string `config:"secret_key"`
@@ -322,6 +326,69 @@ func main() {
 	voiceInactivity.Start(ctx)
 	defer voiceInactivity.Stop()
 
+	// 知识库模块（票 01）：上传（S3 + SHA-256 去重 + 并发闸门 + 限流）→ Redis Stream
+	// 异步向量化（下载解析 → TokenTextSplitter 忠实移植切分（ADR 0004）→ Embedder
+	// 分批 → pgvector 两阶段写入 → 心跳 fencing）→ 恢复调度兜底。向量协议与
+	// Redis Stream key/group 与 Java 共库共存（ADR 0005）；恢复阈值沿用共享的
+	// app.async.recovery 段（Java 默认值一致）。
+	kbStream := knowledgebase.NewRedisStream(rdb.Client)
+	kbRepo := knowledgebase.NewRepo(db.DB, slogger)
+	kbProducer := knowledgebase.NewVectorizeProducer(kbStream, kbRepo, slogger)
+	kbParseSvc := knowledgebase.NewParseService(storeSvc, appCfg.KnowledgeBase.ParseTimeout, appCfg.KnowledgeBase.MaxTextBytes, slogger)
+	kbSplitterCfg := appCfg.KnowledgeBase.SplitterConfig()
+	kbSplitter := textsplit.NewTokenTextSplitter(kbSplitterCfg)
+	kbVectorSvc := knowledgebase.NewVectorizeService(kbSplitter, kbSplitterCfg, appCfg.KnowledgeBase.EmbeddingBatch, kbRepo, vecStore, slogger)
+	kbConsumer := knowledgebase.NewVectorizeConsumer(kbStream, kbRepo, kbParseSvc, kbVectorSvc, appCfg.KnowledgeBase.HeartbeatThrottle, slogger)
+	kbConsumer.Start(ctx)
+	defer kbConsumer.Stop()
+	kbRecovery := knowledgebase.NewRecoveryScheduler(kbRepo, kbProducer, knowledgebase.RecoveryConfig{
+		Enabled:             appCfg.Async.Recovery.Enabled,
+		PendingThreshold:    appCfg.Async.Recovery.PendingThreshold,
+		ProcessingThreshold: appCfg.Async.Recovery.ProcessingThreshold,
+		Interval:            appCfg.Async.Recovery.Interval,
+		BatchSize:           appCfg.Async.Recovery.BatchSize,
+		MaxRecoveryCount:    appCfg.Async.Recovery.MaxRecoveryCount,
+	}, slogger)
+	kbRecovery.Start(ctx)
+	defer kbRecovery.Stop()
+	kbUpload := knowledgebase.NewUploadService(kbRepo, storeSvc, kbProducer,
+		appCfg.KnowledgeBase.MaxFileSize, appCfg.KnowledgeBase.MaxConcurrent, slogger)
+	// 管理接口（票 02）：列表/详情/删除/分类/搜索/统计/下载。
+	kbList := knowledgebase.NewListService(kbRepo, storeSvc, slogger)
+	kbDelete := knowledgebase.NewDeleteService(kbRepo, storeSvc, slogger)
+	// RAG 查询 + RAG 会话（票 03）：问题改写 → 动态分档检索 → [S#] 引用 prompt →
+	// 拒答探测 → footer → SSE。检索经 vector.Store 的 kb_id IN 下推（回退本地过滤），
+	// 对话模型走默认 Provider 的普通 ChatModel（Java getPlainChatClient()）。
+	kbQuery := knowledgebase.NewQueryService(
+		func(ctx context.Context) (knowledgebase.ChatModel, error) { return bridge.RagChatModelFor(ctx) },
+		vecStore, kbRepo, kbList, appCfg.KnowledgeBase.Query, slogger)
+	kbChatRepo := knowledgebase.NewChatRepo(db.DB, slogger)
+	kbChat := knowledgebase.NewRagChatService(kbRepo, kbChatRepo, kbQuery, appCfg.KnowledgeBase.Query, slogger)
+	kbCtl := knowledgebase.NewController(kbUpload, kbList, kbDelete, kbQuery, rl)
+	kbChatCtl := knowledgebase.NewRagChatController(kbChat, slogger)
+	// 题库异步出题（票 04）：taskId 幂等 → Redis Stream（knowledgebase:question-gen:stream /
+	// question-gen-group，消息字段 kbId/taskId/retryCount）→ 4 组固定检索构造上下文 →
+	// 结构化输出（复用 ai.StructuredInvoker，失败带修复提示重试）→ replace 小事务。
+	// 可选 llmProvider 经 aibridge 的 JSONChatModelFor 接缝解析（先例 interview resolver）。
+	kbQStream := knowledgebase.NewQuestionGenStream(rdb.Client)
+	kbQProducer := knowledgebase.NewQuestionGenProducer(kbQStream, kbRepo, slogger)
+	kbQGen := knowledgebase.NewQuestionGenerationService(kbRepo, vecStore, bridge, invoker,
+		interview.NewPromptSanitizer(slogger), slogger)
+	kbQConsumer := knowledgebase.NewQuestionGenConsumer(kbQStream, kbRepo, kbQGen, kbQProducer, slogger)
+	kbQConsumer.Start(ctx)
+	defer kbQConsumer.Stop()
+	kbQRecovery := knowledgebase.NewQuestionGenRecoveryScheduler(kbRepo, kbQProducer, slogger)
+	kbQRecovery.Start(ctx)
+	defer kbQRecovery.Stop()
+	kbQuestionSvc := knowledgebase.NewQuestionService(kbRepo, kbQProducer, slogger)
+	kbQuestionCtl := knowledgebase.NewQuestionController(kbQuestionSvc, rl)
+	// 知识库面试（票 05）：洗牌抽题 + 容量预判，经 interview 模块的
+	// 「从题目集合创建场次」接缝（sessionSvc）落统一 interview_sessions
+	// （sourceType=KNOWLEDGE_BASE + knowledge_base_id + interview_category，
+	// Redis 缓存 + DB 双写）；评估以题目自带参考基线评分。
+	kbInterviewSvc := knowledgebase.NewInterviewService(kbRepo, sessionSvc, slogger)
+	kbInterviewCtl := knowledgebase.NewInterviewController(kbInterviewSvc)
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -342,6 +409,10 @@ func main() {
 	resumeCtl.RegisterRoutes(api)
 	interviewCtl.RegisterRoutes(api)
 	voiceCtl.RegisterRoutes(api)
+	kbCtl.RegisterRoutes(api)
+	kbChatCtl.RegisterRoutes(api)
+	kbQuestionCtl.RegisterRoutes(api)
+	kbInterviewCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

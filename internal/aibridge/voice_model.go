@@ -36,6 +36,14 @@ func (b *Bridge) VoicePlainCompleterFor(ctx context.Context, providerID string) 
 	return b.Reg.ChatModelFor(ctx, b.Crypto, id, b.Timeout)
 }
 
+// RagChatModelFor 默认聊天 Provider 的普通（非 JSON 模式）对话模型，同时具备
+// Generate 与 Stream 能力（知识库 RAG 改写/问答用，Java
+// LlmProviderRegistry.getPlainChatClient() 无参形式）。返回 *einoopenai.ChatModel，
+// 满足 knowledgebase.ChatModel 接缝（main 注入，两包互不依赖）。
+func (b *Bridge) RagChatModelFor(ctx context.Context) (*einoopenai.ChatModel, error) {
+	return b.Reg.ChatModelFor(ctx, b.Crypto, b.Reg.DefaultChatID(), b.Timeout)
+}
+
 // resolveVoiceProviderID Java resolveProviderId 语义（与 interview.DefaultChatProviderID
 // 同规则；独立实现以保持 aibridge 不依赖业务模块）。
 func resolveVoiceProviderID(providerID, defaultID string) string {

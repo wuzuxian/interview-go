@@ -2,7 +2,10 @@
 // 由统一响应层转换为 HTTP 200 + Result{code,message} 结构。
 package apperr
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // AppError 业务错误，携带业务码与用户可读消息。
 type AppError struct {
@@ -39,6 +42,16 @@ func From(err error) *AppError {
 	return &AppError{Code: CodeInternalError, Message: "系统繁忙，请稍后重试", Cause: err}
 }
 
+// Is 判断错误链上是否携带指定业务码。
+func Is(err error, code int) bool {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if a, ok := e.(*AppError); ok && a.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 // 业务错误码，与 Java 版 interview.guide.common.exception.ErrorCode 对齐。
 const (
 	CodeBadRequest           = 400
@@ -66,21 +79,28 @@ const (
 	CodeInterviewQuestionInsufficient     = 3009
 	// Java 版查询不存在的方向复用 BAD_REQUEST，
 	// 本仓库按票面要求给 404 语义，取 3101 避让会话段。
-	CodeSkillNotFound        = 3101
-	CodeStorageUploadFailed  = 4001
-	CodeStorageDownloadFail  = 4002
-	CodeStorageDeleteFailed  = 4003
-	CodeExportPDFFailed      = 5001
-	CodeAIServiceUnavailable = 7001
-	CodeAIServiceTimeout     = 7002
-	CodeAIServiceError       = 7003
-	CodeAIAPIKeyInvalid      = 7004
-	CodeAIRateLimitExceeded  = 7005
-	CodeProviderNotFound     = 11001
-	CodeProviderExists       = 11002
-	CodeProviderReadFailed   = 11004
-	CodeProviderWriteFailed  = 11005
-	CodeDefaultNoDelete      = 11007
+	CodeSkillNotFound       = 3101
+	CodeStorageUploadFailed = 4001
+	CodeStorageDownloadFail = 4002
+	CodeStorageDeleteFailed = 4003
+	CodeExportPDFFailed     = 5001
+	// 知识库模块 6xxx（对齐 Java ErrorCode 知识库模块段原文；
+	// 6003 在 Java 侧即缺号，保持缺口）。
+	CodeKnowledgeBaseNotFound            = 6001
+	CodeKnowledgeBaseParseFailed         = 6002
+	CodeKnowledgeBaseQueryFailed         = 6004
+	CodeKnowledgeBaseDeleteFailed        = 6005
+	CodeKnowledgeBaseVectorizationFailed = 6006
+	CodeAIServiceUnavailable             = 7001
+	CodeAIServiceTimeout                 = 7002
+	CodeAIServiceError                   = 7003
+	CodeAIAPIKeyInvalid                  = 7004
+	CodeAIRateLimitExceeded              = 7005
+	CodeProviderNotFound                 = 11001
+	CodeProviderExists                   = 11002
+	CodeProviderReadFailed               = 11004
+	CodeProviderWriteFailed              = 11005
+	CodeDefaultNoDelete                  = 11007
 	// 语音模块错误码，对照 Java ErrorCode 语音面试段（L69-72）与语音配置段
 	// （L82-84）原文补全：10001/10004/10006/11009/11010/11011（11009/11010 原已预留）。
 	CodeVoiceSessionNotFound    = 10001

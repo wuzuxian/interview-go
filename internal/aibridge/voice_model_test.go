@@ -1,16 +1,24 @@
 // 语音流式模型接缝契约：*Bridge 满足 voiceinterview.VoiceModelResolver
 // （ai.StreamChatModel 与 voiceinterview.StreamChatModel 为同一别名类型）、
-// provider 解析语义对齐 Java resolveProviderId。
+// provider 解析语义对齐 Java resolveProviderId。知识库 RAG 模型接缝：
+// RagChatModelFor 返回 *einoopenai.ChatModel 满足 knowledgebase.ChatModel。
 package aibridge
 
 import (
 	"testing"
 
+	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+
+	"github.com/wuzuxian/interview/internal/knowledgebase"
 	"github.com/wuzuxian/interview/internal/voiceinterview"
 )
 
-// 编译期契约：*Bridge 满足语音模块的流式模型解析接缝（无需依赖业务模块）。
-var _ voiceinterview.VoiceModelResolver = (*Bridge)(nil)
+// 编译期契约：*Bridge 满足语音模块的流式模型解析接缝（无需依赖业务模块）；
+// eino ChatModel 满足知识库 RAG 的 Generate+Stream 双能力接缝。
+var (
+	_ voiceinterview.VoiceModelResolver = (*Bridge)(nil)
+	_ knowledgebase.ChatModel           = (*einoopenai.ChatModel)(nil)
+)
 
 func TestResolveVoiceProviderID默认回退(t *testing.T) {
 	cases := []struct {

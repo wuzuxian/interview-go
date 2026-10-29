@@ -1,11 +1,14 @@
-// Command smoke 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式）。
+// Command smoke 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式 / 票 05 知识库模式）。
 //
 // 发布前人工验收项（spec Testing Decisions 验收方式 B + 真实冒烟条目）：
 //   - text 模式（默认）：走真实 Provider 完成 创建（真实出题）→ 模拟作答 →
 //     交卷 → 轮询评估 → 报告校验 → 明细校验 → PDF 导出；
 //   - voice 模式：走真实语音链路完成 前置检查 voice_config → 创建语音场次 →
 //     WS 开场白 → TTS 开场音频重采样回喂 ASR → 提交 → 字幕/流式文本/音频块
-//     断言 → 结束 → 轮询评估 → 报告校验。
+//     断言 → 结束 → 轮询评估 → 报告校验；
+//   - knowledgebase 模式：走真 PG/pgvector/Redis/S3/模型服务完成 上传 →
+//     向量化 → RAG 查询 → 拒答 → 出题 → 启用 → 容量 → 知识库面试 → 作答
+//     交卷 → 轮询评估 → 报告校验。
 //
 // 每步打印校验点与耗时；任一步失败非零退出并输出可定位信息（步骤名 + 响应摘要）。
 //
@@ -14,9 +17,10 @@
 //     APP_SERVER_WRITE_TIMEOUT=180s 启动，否则客户端会先超时；
 //   - config.yaml 的 app.ai.providers / 数据库 llm_provider_config 有可用真实 Provider
 //     （如 dashscope/qwen3.5-flash）；Postgres/Redis 已运行；
-//   - voice 模式另需设置页 voice_config 已配置真实 ASR/TTS DashScope Key。
+//   - voice 模式另需设置页 voice_config 已配置真实 ASR/TTS DashScope Key；
+//   - knowledgebase 模式另需 S3（RustFS）已运行且 Embedding/Chat Provider 可用。
 //
-// 用法：go run ./cmd/smoke [-mode text|voice] [flags]
+// 用法：go run ./cmd/smoke [-mode text|voice|knowledgebase] [flags]
 package main
 
 import (
@@ -58,6 +62,8 @@ type options struct {
 	provider      string
 	outDir        string
 	keep          bool
+	kbMain        int
+	kbFollow      int
 }
 
 func main() {
@@ -68,25 +74,30 @@ func main() {
 		err = run(opts, os.Stdout)
 	case "voice":
 		err = runVoice(opts, os.Stdout)
+	case "knowledgebase":
+		err = runKnowledgeBase(opts, os.Stdout)
 	default:
-		err = fmt.Errorf("参数 -mode 非法：%q（可选 text|voice）", opts.mode)
+		err = fmt.Errorf("参数 -mode 非法：%q（可选 text|voice|knowledgebase）", opts.mode)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n冒烟失败: %v\n", err)
 		os.Exit(1)
 	}
-	if opts.mode == "voice" {
+	switch opts.mode {
+	case "voice":
 		fmt.Println("\n冒烟通过：语音面试全链路（前置检查→创建→WS 开场白→TTS 音频重采样回喂 ASR→提交→字幕/流式文本/音频块→结束→评估→报告→清理）全部校验点通过。")
-		return
+	case "knowledgebase":
+		fmt.Println("\n冒烟通过：知识库全链路（上传→向量化→RAG 查询→拒答→出题→启用→容量→知识库面试→作答交卷→评估→报告→清理）全部校验点通过。")
+	default:
+		fmt.Println("\n冒烟通过：真实 LLM 全链路（创建→出题→作答→交卷→评估→报告→明细→PDF）全部校验点通过。")
 	}
-	fmt.Println("\n冒烟通过：真实 LLM 全链路（创建→出题→作答→交卷→评估→报告→明细→PDF）全部校验点通过。")
 }
 
 // parseFlags 解析命令行参数并注册帮助文案（前置条件说明，票面验收项）。
 func parseFlags() *options {
 	opts := &options{}
 	flag.StringVar(&opts.mode, "mode", "text",
-		"冒烟模式：text=文字面试全链路（默认）；voice=语音面试全链路（需 voice_config 已配置真实 ASR/TTS Key）")
+		"冒烟模式：text=文字面试全链路（默认）；voice=语音面试全链路（需 voice_config 已配置真实 ASR/TTS Key）；knowledgebase=知识库全链路（需 PG/pgvector/Redis/S3 与真实模型服务）")
 	flag.StringVar(&opts.baseURL, "base-url", defaultBaseURL,
 		"服务地址（须包含协议，如 http://127.0.0.1:8080）")
 	flag.DurationVar(&opts.timeout, "timeout", defaultTimeout,
@@ -104,10 +115,14 @@ func parseFlags() *options {
 	flag.StringVar(&opts.outDir, "out", os.TempDir(),
 		"PDF 导出目录（默认系统临时目录；仅 text 模式使用）")
 	flag.BoolVar(&opts.keep, "keep", false,
-		"保留本次冒烟创建的场次（默认结束时 DELETE 清理；两种模式共用）")
+		"保留本次冒烟创建的场次（默认结束时 DELETE 清理；三种模式共用）")
+	flag.IntVar(&opts.kbMain, "kb-main", 2,
+		"知识库面试主问题数量（1-20；仅 knowledgebase 模式使用）")
+	flag.IntVar(&opts.kbFollow, "kb-follow", 1,
+		"知识库面试每题追问数量（0-5；仅 knowledgebase 模式使用）")
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
-		fmt.Fprint(out, `smoke - 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式，发布前人工验收项）
+		fmt.Fprint(out, `smoke - 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式 / 票 05 知识库模式，发布前人工验收项）
 
 -mode text（默认）文字链路：
   健康检查 → 创建场次（真实出题）→ 题目结构校验 → 模拟作答（含 1 题留空
@@ -122,6 +137,16 @@ func parseFlags() *options {
   修正文本）→ 断言 subtitle(final=true)/text(final=true)/audio_chunk/
   audio_complete → end_interview → 轮询评估至 COMPLETED → 报告必备字段
   校验 → DELETE 清理（可用 -keep 跳过）。
+
+-mode knowledgebase 知识库链路（票 05）：
+  健康检查 → 生成语料并 multipart 上传 → 轮询向量化完成（chunkCount>0）→
+  RAG 查询（回答非空且不命中拒答）→ 拒答探测（无关问题固定拒答文案）→
+  异步出题轮询 COMPLETED（savedCount 达标）→ 批量启用题目（DRAFT→ACTIVE，
+  对齐前端"启用"；面试只取 ACTIVE）→ 面试容量预判（目标档位 selectable）→
+  创建知识库面试场次（sourceType 语义字段 + 参考答案/评分要点/评分规则/
+  来源上下文）→ 模拟作答提交（末题自动交卷）→ 轮询评估至 COMPLETED →
+  报告校验（总分/逐题/参考答案齐全）→ DELETE 清理（场次 + 知识库，
+  可用 -keep 跳过；参数 -kb-main/-kb-follow）。
 
 每步打印校验点与耗时；任一步失败以非零退出码结束，错误信息含步骤名与响应摘要。
 
