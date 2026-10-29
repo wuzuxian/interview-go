@@ -483,6 +483,12 @@ func (r *Repo) DeleteKnowledgeBaseRecords(ctx context.Context, id int64) (*strin
 		if err := tx.Exec("DELETE FROM rag_session_knowledge_bases WHERE knowledge_base_id = ?", id).Error; err != nil {
 			return err
 		}
+		// 偏离 #31：Java 删除链未删题，带题库的知识库删除必撞外键
+		// fkosobqu06r3tbr13ca043slftw（Java 潜伏缺陷，其题库仓库的
+		// deleteByKnowledgeBaseId 仅用于出题 replace 路径）；删记录前连带删题。
+		if err := tx.Exec("DELETE FROM knowledge_base_questions WHERE knowledge_base_id = ?", id).Error; err != nil {
+			return err
+		}
 		return tx.Delete(&KnowledgeBaseEntity{}, id).Error
 	})
 	if err != nil {

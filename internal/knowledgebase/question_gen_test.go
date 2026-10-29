@@ -336,6 +336,11 @@ func Test出题prompt锚点(t *testing.T) {
 	if !strings.Contains(sys, "# 安全边界") || !strings.Contains(sys, "Your response should be in JSON format") {
 		t.Errorf("system 缺防注入段或格式指令")
 	}
+	// 偏离 #19 收窄：Schema 骨架（BeanOutputConverter.getFormat() 等价物）锚点，
+	// 防止出题字段名（尤其 followUps）失去约束后被模型/修复重试省略。
+	if !strings.Contains(sys, "\"followUps\": [") || !strings.Contains(sys, "\"referenceAnswer\": \"追问参考答案\"") {
+		t.Errorf("system 缺输出 JSON 骨架（getFormat() 等价物）")
+	}
 	for _, anchor := range []string{
 		"《" + kb.Name + "》", "difficulty: mid", "# Existing Categories",
 		"- JVM（1 题）", "# Existing Questions", "- 已有的旧题目",

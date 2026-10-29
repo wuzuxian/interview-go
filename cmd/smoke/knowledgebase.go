@@ -69,7 +69,13 @@ func runKnowledgeBase(opts *options, out io.Writer) error {
 		{"报告校验", kb.stepReport},
 		{"清理场次与知识库", kb.stepCleanup},
 	}
-	return executeSteps(context.Background(), out, sm, steps)
+	runErr := executeSteps(context.Background(), out, sm, steps)
+	// 失败即停时清理步骤不会执行：提示残留知识库，避免旧语料撞去重误伤重跑。
+	if runErr != nil && kb.kbID != 0 {
+		return fmt.Errorf("%w\n（残留知识库 kbId=%d 未清理，可在管理页删除或 DELETE /api/knowledgebase/%d）",
+			runErr, kb.kbID, kb.kbID)
+	}
+	return runErr
 }
 
 // kbFlow 知识库链路状态。
@@ -151,7 +157,7 @@ func (k *kbFlow) stepUpload(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("构造 multipart 失败: %v", err)
 	}
-	if _, err := fw.Write([]byte(kbDocument())); err != nil {
+	if _, err := fw.Write([]byte(kbDocument() + "\n\n---\n\n运行标识：" + newRequestID() + "\n")); err != nil {
 		return fmt.Errorf("写入语料失败: %v", err)
 	}
 	_ = writer.WriteField("name", k.kbName)
@@ -191,6 +197,8 @@ func (k *kbFlow) stepUpload(ctx context.Context) error {
 		return fmt.Errorf("上传响应缺少 knowledgeBase.id: %s", string(env.Data))
 	}
 	if out.Duplicate {
+		// 语料已附唯一运行标识行，命中 SHA-256 去重即为极小概率内容碰撞；
+		// 此时重试会生成新的运行标识，必然成功——故保留「请重试」话术。
 		return fmt.Errorf("冒烟语料意外命中重复（SHA-256 去重），请重试")
 	}
 	k.kbID = out.KnowledgeBase.ID
@@ -299,7 +307,57 @@ func (k *kbFlow) stepNoResult(ctx context.Context) error {
 
 // stepGenerateQuestions 发起异步出题并轮询 generation-status 至 COMPLETED。
 // 题量给足余量（kbMain+2，封顶 6），确认 savedCount ≥ 需求。
+// stepGenerateQuestions 发起出题并轮询完成；追问池不足时重新出题吸收模型方差
+// （模型偶发不产出 followUps，容量/建场将不可用；重试最多 3 轮，仍不足如实报错）。
 func (k *kbFlow) stepGenerateQuestions(ctx context.Context) error {
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := k.submitAndPollGeneration(ctx); err != nil {
+			return err
+		}
+		capable, err := k.countFollowUpCapable(ctx)
+		if err != nil {
+			return err
+		}
+		if capable >= k.neededQuestions() {
+			return nil
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf("出题 %d 轮后追问池仍不足：带 ≥%d 个追问的题仅 %d 道（需求 %d）",
+				attempt, k.sm.opts.kbFollow, capable, k.neededQuestions())
+		}
+		k.sm.logf("追问池不足（%d/%d），第 %d 轮重新出题吸收模型方差", capable, k.neededQuestions(), attempt+1)
+	}
+	return nil
+}
+
+// countFollowUpCapable 统计追问池满足 followUpCount 档位的题目数（容量/建场的选题门槛）。
+func (k *kbFlow) countFollowUpCapable(ctx context.Context) (int, error) {
+	raw, err := k.sm.do(ctx, http.MethodGet, "/api/knowledgebase/"+itoa64(k.kbID)+"/questions", nil)
+	if err != nil {
+		return 0, err
+	}
+	env, err := parseEnvelope(raw)
+	if err != nil {
+		return 0, fmt.Errorf("查询题目列表 %v，响应摘要: %s", err, excerpt(raw, bodyExcerptRunes))
+	}
+	var questions []struct {
+		FollowUps []json.RawMessage `json:"followUps"`
+	}
+	if err := json.Unmarshal(env.Data, &questions); err != nil {
+		return 0, fmt.Errorf("解析题目列表失败: %v", err)
+	}
+	capable := 0
+	for _, q := range questions {
+		if len(q.FollowUps) >= k.sm.opts.kbFollow {
+			capable++
+		}
+	}
+	return capable, nil
+}
+
+// submitAndPollGeneration 单轮出题：提交任务并轮询到 COMPLETED/FAILED/超时。
+func (k *kbFlow) submitAndPollGeneration(ctx context.Context) error {
 	sm := k.sm
 	generateCount := k.neededQuestions() + 2
 	if generateCount > 6 {

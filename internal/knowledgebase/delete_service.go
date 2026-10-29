@@ -1,6 +1,7 @@
 // 知识库删除服务：补偿顺序逐字对齐 Java KnowledgeBaseDeleteService.deleteKnowledgeBase：
 // 事务内先摘 RAG 会话关联（防外键约束）→ 删 DB 记录 → 事务外删向量（失败不阻断仅记
-// 日志）→ 删对象存储文件（失败留 storageKey 供人工补偿，仅记日志）。
+// 日志）→ 删对象存储文件（失败留 storageKey 供人工补偿，仅记日志）。偏离 #31：删记录
+// 前连带删题库题目（修 Java 潜伏外键缺陷，见 repo.DeleteKnowledgeBaseRecords）。
 package knowledgebase
 
 import (

@@ -141,7 +141,7 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但知识库产品�
 
 **阶段三（题库）**
 
-19. 结构化输出 system prompt 组装顺序与重试提示位置：Java「模板 + BeanOutputConverter.getFormat() + 防注入段」、重试提示追加 system；Go 经 ai.InvokeStructured 接缝为「模板 + 防注入段 + 格式指令」、解析错误追加 user prompt。格式指令为 interview 模块既有通用 JSON 格式说明（非 BeanOutputConverter 完整 Schema 文本），字段约束由 prompt 话术与解析兜底。（票 04）
+19. 结构化输出 system prompt 组装顺序与重试提示位置：Java「模板 + BeanOutputConverter.getFormat() + 防注入段」、重试提示追加 system；Go 经 ai.InvokeStructured 接缝为「模板 + 防注入段 + 格式指令」、解析错误追加 user prompt。格式指令为 interview 模块既有通用 JSON 格式说明（非 BeanOutputConverter 完整 Schema 文本），字段约束由 prompt 话术与解析兜底。（票 04；2026-10-29 收窄：出题 system 在模板后补入显式 JSON Schema 骨架——对位 Java getFormat() 槽位，字段名锁定，模型省略 followUps 的方差收窄；smoke 出题另加「追问池不足自动重试至多 3 轮」吸收残余方差）
 20. 结构化输出整体失败消息：Java「知识库题库生成失败：请稍后重试」，Go 沿 ai.InvokeStructured 语义带最后解析错误（码同 3006；对外 questionGenError 恒为安全文案，差异不可达）。（票 04）
 21. LLM 调用走 JSON 响应模式模型（aibridge.JSONChatModelFor）而非 Java 普通 ChatClient + BeanOutputConverter 文本解析——沿 interview 模块既有接缝先例。（票 04）
 22. 枚举解析错误：题目列表 status 查询参数与请求体 status 非法值 → 400 Result「无效的题目状态: 原值」（Java 为 Spring 类型转换 400 / HttpMessageNotReadable，非 Result 形状，前端不发非法值，不可观察）。（票 04）
@@ -157,4 +157,8 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但知识库产品�
 
 29. 路径 ID 参数解析：非数字 / int64 溢出 / 负数 → 400 Result「无效的ID参数」（Java @PathVariable Long 类型不匹配走全局兜底 500「系统繁忙，请稍后重试」；负数在 Java parseLong 下合法、走「不存在」路径）——评审统一要求 400 快速失败。（code-review 修复）
 
-共 29 条。验收留痕：真链路 smoke（-mode knowledgebase）由维护者在真实环境执行收口。
+30. RAG prompt 拒答指令改为强制固定句（system「信息不足/超出范围」两行 + user「完整性」行）：无关问题由模型直接回复与 NO_RESULT_RESPONSE 逐字相同的固定句。Java 为自由表述（「1-2 句说明信息不足」）+ isNoResultLike 5 子串尽力归一，实测模型常给出「并未包含…」等第六类措辞而漏归一，违背用户故事 15「固定拒答文案」契约；未选「加宽探测子串」方案以免误伤「未包含 X，但 Y 一节…」类对比回答。归一化探测器与 Java 保持一致不动。（smoke 验收发现，2026-10-29）
+
+31. 删除知识库时事务内连带删除题库题目（knowledge_base_questions）：Java 删除链只摘 RAG 会话关联后直接删记录，而该表外键 fkosobqu06r3tbr13ca043slftw 为无级联普通外键——带题库的知识库删除在 Java 侧同样必撞外键（潜伏缺陷，题库仓库的 deleteByKnowledgeBaseId 仅用于出题 replace 路径）；Go 补上删题环节使删除可达。interview_sessions.knowledge_base_id 无外键，悬挂引用与 Java 一致容忍。（smoke 验收发现，2026-10-29）
+
+共 31 条。验收留痕：真链路 smoke（-mode knowledgebase）由维护者在真实环境执行收口。

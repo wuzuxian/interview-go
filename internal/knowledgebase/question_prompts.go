@@ -1,5 +1,7 @@
 // Package knowledgebase 的出题 prompt 模板常量：从 Java 版 prompts/*.st
-// 逐字节移植（script 生成，禁手改；对照来源见各常量注释）。
+// 逐字节移植（script 生成，禁手改；对照来源见各常量注释）。例外：
+// questionGenFormatInstruction 非 .st 内容，是 Java 侧 BeanOutputConverter
+// .getFormat() 动态生成的 Schema 的等价物（偏离 #19 收窄）。
 package knowledgebase
 
 // questionGenSystemPromptTemplate Java prompts/knowledgebase-question-generation-system.st 逐字节。
@@ -7,3 +9,32 @@ const questionGenSystemPromptTemplate = "# Role\n\u4f60\u662f\u4e00\u4f4d\u8d44\
 
 // questionGenUserPromptTemplate Java prompts/knowledgebase-question-generation-user.st 逐字节。
 const questionGenUserPromptTemplate = "# Task\n\u8bf7\u4e3a\u77e5\u8bc6\u5e93\u300a{knowledgeBaseName}\u300b\u751f\u6210 {questionCount} \u9053\u9762\u8bd5\u9898\u8349\u7a3f\u3002\n\ndifficulty: {difficulty}\n\n# Existing Categories\n{existingCategories}\n\n# Existing Questions\n\u4ee5\u4e0b\u9898\u76ee\u5df2\u7ecf\u51fa\u8fc7\uff0c\u8bf7\u4ece\u4e0d\u540c\u77e5\u8bc6\u70b9\u6216\u4e0d\u540c\u8003\u5bdf\u89d2\u5ea6\u51fa\u9898\uff0c\u907f\u514d\u9898\u9762\u6216\u8003\u5bdf\u70b9\u91cd\u590d\uff1a\n{existingQuestions}\n\n# Knowledge Base Context\n{context}\n\n# Output Requirements\n- category: \u9762\u8bd5\u65b9\u5411\uff0c\u9075\u5faa system prompt \u4e2d\u7684\u65b9\u5411\u5f52\u7c7b\u89c4\u5219\uff08\u6700\u591a {categoryLimit} \u4e2a\u4e0d\u540c\u65b9\u5411\uff0c\u4f18\u5148\u590d\u7528\u5df2\u6709\uff09\n- question: \u4e3b\u95ee\u9898\u9898\u5e72\n- type: \u53ef\u9009\u7684\u6280\u672f\u5206\u7c7b key\uff0c\u4f8b\u5982 JVM\u3001REDIS\u3001SPRING\uff1b\u4e0d\u9700\u8981\u65f6\u53ef\u7559\u7a7a\n- topicSummary: \u4e0d\u8d85\u8fc7 80 \u5b57\u7684\u77e5\u8bc6\u70b9\u6458\u8981\n- referenceAnswer: \u53c2\u8003\u7b54\u6848\n- keyPoints: \u8bc4\u5206\u8981\u70b9\u5217\u8868\n- scoringRubric: 10 \u5206\u5236\u8bc4\u5206\u89c4\u5219\n- followUps: \u6bcf\u9053\u4e3b\u95ee\u9898\u914d {followUpCount} \u4e2a\u8ffd\u95ee\uff0c\u6bcf\u4e2a\u8ffd\u95ee\u5305\u542b question\u3001referenceAnswer\u3001keyPoints\u3001scoringRubric\uff1b\u82e5 {followUpCount} \u4e3a 0 \u5219\u8fd4\u56de\u7a7a\u6570\u7ec4\n"
+
+// questionGenFormatInstruction 对应 Java「模板 + BeanOutputConverter.getFormat()
+// + 防注入」中的 Schema 槽位（偏离 #19 收窄）：以显式 JSON 骨架锁定字段名，
+// 模型（尤其修复重试时）有据可依，降低 followUps 等字段被省略的方差。
+const questionGenFormatInstruction = `输出格式：请以如下 JSON 对象输出，字段名必须完全一致：
+
+` + "```json" + `
+{
+  "questions": [
+    {
+      "category": "面试方向",
+      "type": "技术分类 key",
+      "question": "主问题题干",
+      "topicSummary": "知识点摘要",
+      "referenceAnswer": "参考答案",
+      "keyPoints": ["评分要点"],
+      "scoringRubric": "10 分制评分规则",
+      "followUps": [
+        {
+          "question": "追问题干",
+          "referenceAnswer": "追问参考答案",
+          "keyPoints": ["追问要点"],
+          "scoringRubric": "追问评分规则"
+        }
+      ]
+    }
+  ]
+}
+` + "```"

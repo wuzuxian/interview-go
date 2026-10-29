@@ -159,7 +159,7 @@ func (s *QuestionGenerationService) ExecuteGeneration(ctx context.Context, kbID 
 // 随机边界标签包裹并前置数据边界声明）。
 func (s *QuestionGenerationService) callLLM(ctx context.Context, cm ai.ChatCompleter, kb *KnowledgeBaseEntity,
 	difficulty string, questionCount, followUpCount, categoryLimit int, contextText string) (*generatedQuestionList, error) {
-	systemPrompt := questionGenSystemPromptTemplate + antiInjectionInstruction
+	systemPrompt := questionGenSystemPromptTemplate + "\n\n" + questionGenFormatInstruction + "\n\n" + antiInjectionInstruction
 	userPrompt := renderGenerationUserPrompt(
 		s.sanitizer.Sanitize(kb.Name),
 		difficulty, questionCount, followUpCount, categoryLimit,
