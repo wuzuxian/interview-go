@@ -24,7 +24,8 @@ func newScheduleRouter(store Store) *gin.Engine {
 	r := gin.New()
 	api := r.Group("/api")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	NewController(NewService(store, logger), NewParseService(logger)).RegisterRoutes(api)
+	NewController(NewService(store, logger),
+		NewParseService(nil, nil, logger)).RegisterRoutes(api)
 	return r
 }
 

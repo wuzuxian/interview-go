@@ -56,7 +56,7 @@ func (h *Controller) parse(c *gin.Context) {
 	if req.Source != nil {
 		source = *req.Source
 	}
-	result.OK(c, h.parseSvc.Parse(req.RawText, source))
+	result.OK(c, h.parseSvc.Parse(c.Request.Context(), req.RawText, source))
 }
 
 // create 创建日程。

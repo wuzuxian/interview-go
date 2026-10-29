@@ -394,11 +394,18 @@ func main() {
 	kbInterviewCtl := knowledgebase.NewInterviewController(kbInterviewSvc)
 
 	// 面试日程模块（票 01）：自包含 CRUD（Java interviewschedule 模块，与简历/
-	// 面试/语音/知识库零数据关联）；POST /parse 邀约解析随票 02 接入，AI 兜底
-	// 票 03，过期巡检 sweeper 票 04。
+	// 面试/语音/知识库零数据关联）。票 02：POST /parse 邀约解析（规则路径）；
+	// 票 03：AI 兜底走默认 Provider 普通 ChatModel（bridge.RagChatModelFor，
+	// Java getChatClientOrDefault 默认分支；Java source→providerId 怪癖按裁决修正），
+	// 注入防御复用 interview.PromptSanitizer。过期巡检 sweeper 票 04。
 	scheduleRepo := interviewschedule.NewRepo(db.DB)
 	scheduleSvc := interviewschedule.NewService(scheduleRepo, slogger)
-	scheduleCtl := interviewschedule.NewController(scheduleSvc)
+	scheduleParseSvc := interviewschedule.NewParseService(
+		func(ctx context.Context) (interviewschedule.ChatModel, error) {
+			return bridge.RagChatModelFor(ctx)
+		},
+		interview.NewPromptSanitizer(slogger), slogger)
+	scheduleCtl := interviewschedule.NewController(scheduleSvc, scheduleParseSvc)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
