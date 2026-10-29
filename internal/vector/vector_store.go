@@ -122,6 +122,48 @@ func (s *Store) DeleteResumeEmbedding(ctx context.Context, resumeID int64) error
 		fmt.Sprintf("%d", resumeID)).Error
 }
 
+// AddDocuments 批量将文档内容向量化并按 metadata 写入 vector_store
+// （对应 Java VectorStore.add 的通用能力；调用方控制批大小，DashScope 上限 10）。
+// metadata 为每行独立的 JSON 键值对（键名协议见 ADR 0005）；
+// 实现 knowledgebase.VectorWriter 接缝。
+func (s *Store) AddDocuments(ctx context.Context, contents []string, metadatas []map[string]any) error {
+	if len(contents) != len(metadatas) {
+		return fmt.Errorf("vector: 内容与 metadata 数量不一致: %d != %d", len(contents), len(metadatas))
+	}
+	if len(contents) == 0 {
+		return nil
+	}
+	emb, err := s.embedder(ctx)
+	if err != nil {
+		return err
+	}
+	vectors, err := emb.EmbedStrings(ctx, contents)
+	if err != nil {
+		return fmt.Errorf("vector: 向量化失败: %w", err)
+	}
+	if len(vectors) != len(contents) {
+		return fmt.Errorf("vector: 向量化返回数量不一致: %d != %d", len(vectors), len(contents))
+	}
+	rows := make([]vectorStoreRow, 0, len(contents))
+	for i, content := range contents {
+		f32 := make([]float32, len(vectors[i]))
+		for j, v := range vectors[i] {
+			f32[j] = float32(v)
+		}
+		meta, err := json.Marshal(metadatas[i])
+		if err != nil {
+			return fmt.Errorf("vector: metadata 序列化失败: %w", err)
+		}
+		rows = append(rows, vectorStoreRow{
+			ID:        uuid.New(),
+			Content:   &content,
+			Metadata:  meta,
+			Embedding: pgvector.NewVector(f32),
+		})
+	}
+	return s.db.WithContext(ctx).Create(&rows).Error
+}
+
 // SearchSimilarResumes 以向量相似度检索简历（预留能力，供后续语义去重/推荐）。
 func (s *Store) SearchSimilarResumes(ctx context.Context, query string, topK int) ([]SearchHit, error) {
 	emb, err := s.embedder(ctx)

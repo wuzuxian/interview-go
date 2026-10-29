@@ -157,6 +157,24 @@ app:
     # 会话缓存 TTL（Java Redisson bucket TTL 1h）
     session_cache_ttl: 1h
 
+  # 知识库（票 01：上传 → 切分 → 向量入库 → 恢复；阈值与 Java application.yml 一致）
+  knowledgebase:
+    max_file_size: 52428800     # 50MB（Java MAX_FILE_SIZE）
+    max_concurrent: 4           # 上传并发闸门（Java knowledge-base-upload.max-concurrent）
+    parse_timeout: 2m           # 单文件解析超时（Java document-parse.timeout）
+    max_text_bytes: 5242880     # 提取文本上限 5MB（Java BodyContentHandler）
+    embedding_batch: 10         # Embedding 分批上限（DashScope 限制）
+    heartbeat_throttle: 30s     # Embedding 阶段心跳节流（Java heartbeat-throttle）
+    vectorization:              # 切分策略（Java app.ai.rag.vectorization.*）
+      splitter: token
+      chunk_size: 800
+      min_chunk_size_chars: 350
+      min_chunk_length_to_embed: 5
+      max_num_chunks: 10000
+      keep_separator: true
+      punctuation_marks: [".", "?", "!", "\\n", "。", "？", "！", "；"]
+      strategy_version: token-v1
+
   storage:
     endpoint: http://localhost:9000
     access_key: rustfsadmin

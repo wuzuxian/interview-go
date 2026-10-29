@@ -18,6 +18,8 @@ import (
 	"github.com/wuzuxian/interview/internal/aibridge"
 	"github.com/wuzuxian/interview/internal/httpx"
 	"github.com/wuzuxian/interview/internal/interview"
+	"github.com/wuzuxian/interview/internal/knowledgebase"
+	"github.com/wuzuxian/interview/internal/knowledgebase/textsplit"
 	"github.com/wuzuxian/interview/internal/llmprovider"
 	"github.com/wuzuxian/interview/internal/migration"
 	"github.com/wuzuxian/interview/internal/ratelimit"
@@ -51,9 +53,11 @@ type AppConfig struct {
 	// Interview 模拟面试配置段（app.interview），结构定义在 interview 包内与业务同处。
 	Interview interview.Config `config:"interview"`
 	// VoiceInterview 语音面试配置段（app.voice_interview），结构定义在
-	// voiceinterview 包内；默认值随票在 config.go 的 default 标签里逐票补齐。
+	// voiceinterview 包内与业务同处；默认值随票在 config.go 的 default 标签里逐票补齐。
 	VoiceInterview voiceinterview.Config `config:"voice_interview"`
-	Storage        struct {
+	// KnowledgeBase 知识库配置段（app.knowledgebase），结构定义在 knowledgebase 包内。
+	KnowledgeBase knowledgebase.Config `config:"knowledgebase"`
+	Storage       struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
 		SecretKey        string `config:"secret_key"`
@@ -322,6 +326,35 @@ func main() {
 	voiceInactivity.Start(ctx)
 	defer voiceInactivity.Stop()
 
+	// 知识库模块（票 01）：上传（S3 + SHA-256 去重 + 并发闸门 + 限流）→ Redis Stream
+	// 异步向量化（下载解析 → TokenTextSplitter 忠实移植切分（ADR 0004）→ Embedder
+	// 分批 → pgvector 两阶段写入 → 心跳 fencing）→ 恢复调度兜底。向量协议与
+	// Redis Stream key/group 与 Java 共库共存（ADR 0005）；恢复阈值沿用共享的
+	// app.async.recovery 段（Java 默认值一致）。
+	kbStream := knowledgebase.NewRedisStream(rdb.Client)
+	kbRepo := knowledgebase.NewRepo(db.DB, slogger)
+	kbProducer := knowledgebase.NewVectorizeProducer(kbStream, kbRepo, slogger)
+	kbParseSvc := knowledgebase.NewParseService(storeSvc, appCfg.KnowledgeBase.ParseTimeout, appCfg.KnowledgeBase.MaxTextBytes, slogger)
+	kbSplitterCfg := appCfg.KnowledgeBase.SplitterConfig()
+	kbSplitter := textsplit.NewTokenTextSplitter(kbSplitterCfg)
+	kbVectorSvc := knowledgebase.NewVectorizeService(kbSplitter, kbSplitterCfg, appCfg.KnowledgeBase.EmbeddingBatch, kbRepo, vecStore, slogger)
+	kbConsumer := knowledgebase.NewVectorizeConsumer(kbStream, kbRepo, kbParseSvc, kbVectorSvc, appCfg.KnowledgeBase.HeartbeatThrottle, slogger)
+	kbConsumer.Start(ctx)
+	defer kbConsumer.Stop()
+	kbRecovery := knowledgebase.NewRecoveryScheduler(kbRepo, kbProducer, knowledgebase.RecoveryConfig{
+		Enabled:             appCfg.Async.Recovery.Enabled,
+		PendingThreshold:    appCfg.Async.Recovery.PendingThreshold,
+		ProcessingThreshold: appCfg.Async.Recovery.ProcessingThreshold,
+		Interval:            appCfg.Async.Recovery.Interval,
+		BatchSize:           appCfg.Async.Recovery.BatchSize,
+		MaxRecoveryCount:    appCfg.Async.Recovery.MaxRecoveryCount,
+	}, slogger)
+	kbRecovery.Start(ctx)
+	defer kbRecovery.Stop()
+	kbUpload := knowledgebase.NewUploadService(kbRepo, storeSvc, kbProducer,
+		appCfg.KnowledgeBase.MaxFileSize, appCfg.KnowledgeBase.MaxConcurrent, slogger)
+	kbCtl := knowledgebase.NewController(kbUpload, rl)
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -342,6 +375,7 @@ func main() {
 	resumeCtl.RegisterRoutes(api)
 	interviewCtl.RegisterRoutes(api)
 	voiceCtl.RegisterRoutes(api)
+	kbCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

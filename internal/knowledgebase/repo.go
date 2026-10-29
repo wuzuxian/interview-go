@@ -1,0 +1,282 @@
+// 知识库数据访问：知识库行 + vector_store 行的知识库向量操作。
+// 条件更新 SQL 逐条对齐 Java KnowledgeBaseRepository / VectorRepository；
+// SQL 语义由票 05 smoke 真库兜底，单测以内存 fake 测编排决策。
+package knowledgebase
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/wuzuxian/interview/internal/apperr"
+)
+
+// ErrKnowledgeBaseNotFound 知识库不存在（Java 6001 + findById Optional.empty 分支）。
+var ErrKnowledgeBaseNotFound = apperr.New(apperr.CodeKnowledgeBaseNotFound, "知识库不存在")
+
+// Store 知识库模块数据面接缝（生产实现 *Repo，测试注入内存 fake）。
+type Store interface {
+	FindByID(ctx context.Context, id int64) (*KnowledgeBaseEntity, error)
+	FindByFileHash(ctx context.Context, hash string) (*KnowledgeBaseEntity, error)
+	InsertKB(ctx context.Context, kb *KnowledgeBaseEntity) error
+	IncrementAccessCount(ctx context.Context, id int64, at time.Time) error
+
+	// P1-07 条件状态更新（终态不被覆盖，多实例安全）。
+	TryMarkVectorProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error)
+	HeartbeatVectorProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error)
+	CompleteVectorIfProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error)
+	FailVectorIfProcessing(ctx context.Context, id int64, attemptID string, errMsg string, now time.Time) (int64, error)
+	FailVectorIfPending(ctx context.Context, id int64, errMsg string, now time.Time) (int64, error)
+	ResetVectorToPending(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error)
+	UpdateVectorStatusToPending(ctx context.Context, id int64, now time.Time) error
+	ResetVectorRecoveryCount(ctx context.Context, id int64) error
+	TouchQueuedVectorForRecovery(ctx context.Context, id int64, threshold, now time.Time) (int64, error)
+	ResetStaleVectorProcessing(ctx context.Context, id int64, threshold, now time.Time) (int64, error)
+	IncrementVectorRecoveryCount(ctx context.Context, id int64) error
+	FindStaleByVectorStatus(ctx context.Context, status VectorStatus, threshold time.Time, limit int) ([]KnowledgeBaseEntity, error)
+
+	// 两阶段向量落库（Java KnowledgeBasePersistenceService.activateVectorJobAndUpdateSnapshot
+	// + VectorRepository 的 delete/promote/deleteByJobId）。
+	ActivateVectorJobAndUpdateSnapshot(ctx context.Context, kbID int64, attemptID, jobID string, chunkCount int, vectorConfig string) error
+	DeleteVectorsByJobID(ctx context.Context, jobID string) error
+}
+
+// Repo GORM 实现。
+type Repo struct {
+	db     *gorm.DB
+	logger *slog.Logger
+}
+
+// NewRepo 创建仓储。
+func NewRepo(db *gorm.DB, logger *slog.Logger) *Repo {
+	return &Repo{db: db, logger: logger}
+}
+
+// FindByID 按主键查询；不存在返回 ErrKnowledgeBaseNotFound。
+func (r *Repo) FindByID(ctx context.Context, id int64) (*KnowledgeBaseEntity, error) {
+	var row KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).First(&row, id).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, ErrKnowledgeBaseNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// FindByFileHash 按内容哈希查询（去重）；不存在返回 nil（Java Optional.empty）。
+func (r *Repo) FindByFileHash(ctx context.Context, hash string) (*KnowledgeBaseEntity, error) {
+	var row KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Where("file_hash = ?", hash).First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// InsertKB 新建知识库行（Java saveKnowledgeBase：PENDING + vector_updated_at 初始化）。
+func (r *Repo) InsertKB(ctx context.Context, kb *KnowledgeBaseEntity) error {
+	return r.db.WithContext(ctx).Create(kb).Error
+}
+
+// IncrementAccessCount 访问计数 +1 并推进最近访问（Java incrementAccessCount）。
+func (r *Repo) IncrementAccessCount(ctx context.Context, id int64, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id = ?", id).
+		Updates(map[string]any{
+			"access_count":     gorm.Expr("COALESCE(access_count, 0) + 1"),
+			"last_accessed_at": at,
+		}).Error
+}
+
+// TryMarkVectorProcessing PENDING → PROCESSING 条件领取。
+func (r *Repo) TryMarkVectorProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'PROCESSING', vector_attempt_id = ?, vector_updated_at = ? WHERE id = ? AND vector_status = 'PENDING'",
+		attemptID, now, id)
+	return res.RowsAffected, res.Error
+}
+
+// HeartbeatVectorProcessing 心跳：仍为 PROCESSING 且代次匹配才推进进展时间。
+func (r *Repo) HeartbeatVectorProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_updated_at = ? WHERE id = ? AND vector_status = 'PROCESSING' AND vector_attempt_id = ?",
+		now, id, attemptID)
+	return res.RowsAffected, res.Error
+}
+
+// CompleteVectorIfProcessing PROCESSING → COMPLETED（非本代次 no-op）。
+func (r *Repo) CompleteVectorIfProcessing(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'COMPLETED', vector_error = NULL, vector_attempt_id = NULL, vector_updated_at = ? WHERE id = ? AND vector_status = 'PROCESSING' AND vector_attempt_id = ?",
+		now, id, attemptID)
+	return res.RowsAffected, res.Error
+}
+
+// FailVectorIfProcessing 当前执行代次 PROCESSING → FAILED。
+func (r *Repo) FailVectorIfProcessing(ctx context.Context, id int64, attemptID string, errMsg string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'FAILED', vector_error = ?, vector_attempt_id = NULL, vector_updated_at = ? WHERE id = ? AND vector_status = 'PROCESSING' AND vector_attempt_id = ?",
+		truncateError(errMsg, 500), now, id, attemptID)
+	return res.RowsAffected, res.Error
+}
+
+// FailVectorIfPending 尚未领取的 PENDING → FAILED。
+func (r *Repo) FailVectorIfPending(ctx context.Context, id int64, errMsg string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'FAILED', vector_error = ?, vector_attempt_id = NULL, vector_updated_at = ? WHERE id = ? AND vector_status = 'PENDING'",
+		truncateError(errMsg, 500), now, id)
+	return res.RowsAffected, res.Error
+}
+
+// ResetVectorToPending PROCESSING → PENDING（重试重置，按执行代次）。
+func (r *Repo) ResetVectorToPending(ctx context.Context, id int64, attemptID string, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'PENDING', vector_attempt_id = NULL, vector_updated_at = ? WHERE id = ? AND vector_status = 'PROCESSING' AND vector_attempt_id = ?",
+		now, id, attemptID)
+	return res.RowsAffected, res.Error
+}
+
+// UpdateVectorStatusToPending 手动重试：状态置 PENDING、清错误与代次、推进时间
+// （Java persistenceService.updateVectorStatusToPending）。
+func (r *Repo) UpdateVectorStatusToPending(ctx context.Context, id int64, now time.Time) error {
+	res := r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id = ?", id).
+		Updates(map[string]any{
+			"vector_status":     VectorPending,
+			"vector_error":      nil,
+			"vector_attempt_id": nil,
+			"vector_updated_at": now,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrKnowledgeBaseNotFound
+	}
+	return nil
+}
+
+// ResetVectorRecoveryCount 手动重试清零恢复计数。
+func (r *Repo) ResetVectorRecoveryCount(ctx context.Context, id int64) error {
+	return r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id = ?", id).
+		Update("vector_recovery_count", 0).Error
+}
+
+// TouchQueuedVectorForRecovery 恢复补投前原子推进时间（PENDING 且早于阈值）。
+func (r *Repo) TouchQueuedVectorForRecovery(ctx context.Context, id int64, threshold, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_updated_at = ? WHERE id = ? AND vector_status = 'PENDING' AND vector_updated_at < ?",
+		now, id, threshold)
+	return res.RowsAffected, res.Error
+}
+
+// ResetStaleVectorProcessing PROCESSING 无进展超阈值 → PENDING。
+func (r *Repo) ResetStaleVectorProcessing(ctx context.Context, id int64, threshold, now time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Exec(
+		"UPDATE knowledge_bases SET vector_status = 'PENDING', vector_attempt_id = NULL, vector_updated_at = ? WHERE id = ? AND vector_status = 'PROCESSING' AND vector_updated_at < ?",
+		now, id, threshold)
+	return res.RowsAffected, res.Error
+}
+
+// IncrementVectorRecoveryCount 恢复计数 +1。
+func (r *Repo) IncrementVectorRecoveryCount(ctx context.Context, id int64) error {
+	return r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id = ?", id).
+		Update("vector_recovery_count", gorm.Expr("vector_recovery_count + 1")).Error
+}
+
+// FindStaleByVectorStatus 卡住任务扫描（带每轮上限）。
+func (r *Repo) FindStaleByVectorStatus(ctx context.Context, status VectorStatus, threshold time.Time, limit int) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).
+		Where("vector_status = ? AND vector_updated_at < ?", status, threshold).
+		Order("vector_updated_at ASC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
+// ActivateVectorJobAndUpdateSnapshot 数据库锁内校验执行代次，先删旧正式向量，
+// 再把临时向量 promote 为正式向量，并写入 chunk_count / vector_config / 完成时间
+// （Java activateVectorJobAndUpdateSnapshot，删除/promote SQL 与 Java VectorRepository 逐字对齐）。
+func (r *Repo) ActivateVectorJobAndUpdateSnapshot(ctx context.Context, kbID int64, attemptID, jobID string, chunkCount int, vectorConfig string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var row KnowledgeBaseEntity
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&row, kbID).Error
+		if err == gorm.ErrRecordNotFound {
+			return ErrKnowledgeBaseNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if row.VectorStatus != VectorProcessing || row.VectorAttemptID == nil || *row.VectorAttemptID != attemptID {
+			return apperr.New(apperr.CodeKnowledgeBaseVectorizationFailed, "向量化任务执行权已失效")
+		}
+		if err := deleteVectorsByKBID(tx, kbID); err != nil {
+			return err
+		}
+		if err := promoteVectorsByJobID(tx, kbID, jobID); err != nil {
+			return err
+		}
+		now := time.Now()
+		return tx.Model(&KnowledgeBaseEntity{}).Where("id = ?", kbID).
+			Updates(map[string]any{
+				"chunk_count":       chunkCount,
+				"vector_config":     vectorConfig,
+				"vectorized_at":     now,
+				"vector_updated_at": now,
+			}).Error
+	})
+}
+
+// DeleteVectorsByJobID 按 jobId 清理临时向量（Java VectorRepository.deleteByVectorJobId）。
+func (r *Repo) DeleteVectorsByJobID(ctx context.Context, jobID string) error {
+	return promoteError(r.db.WithContext(ctx).Exec(
+		"DELETE FROM vector_store WHERE metadata->>'kb_vector_job_id' = ?", jobID))
+}
+
+// deleteVectorsByKBID 删除指定知识库的正式向量
+// （Java VectorRepository.deleteByKnowledgeBaseId，兼容 kb_id_long 旧键）。
+func deleteVectorsByKBID(tx *gorm.DB, kbID int64) error {
+	res := tx.Exec(
+		"DELETE FROM vector_store WHERE metadata->>'kb_id' = ? OR (metadata->>'kb_id_long' IS NOT NULL AND (metadata->>'kb_id_long')::bigint = ?)",
+		fmt.Sprintf("%d", kbID), kbID)
+	if res.Error != nil {
+		return apperr.Wrap(apperr.CodeKnowledgeBaseDeleteFailed, "删除向量数据失败", res.Error)
+	}
+	return nil
+}
+
+// promoteVectorsByJobID 临时向量提升为正式向量
+// （Java VectorRepository.promoteVectorJob：jsonb_set 提升 kb_id 并删除临时字段）。
+func promoteVectorsByJobID(tx *gorm.DB, kbID int64, jobID string) error {
+	res := tx.Exec(`UPDATE vector_store
+		SET metadata = (jsonb_set(
+				metadata::jsonb,
+				'{kb_id}',
+				to_jsonb(?::text),
+				true
+			) - 'kb_vector_job_id' - 'kb_target_id')::json
+		WHERE metadata->>'kb_vector_job_id' = ?`, fmt.Sprintf("%d", kbID), jobID)
+	return promoteError(res)
+}
+
+func promoteError(res *gorm.DB) error {
+	if res.Error != nil {
+		return apperr.Wrap(apperr.CodeKnowledgeBaseVectorizationFailed, "向量化数据操作失败", res.Error)
+	}
+	return nil
+}
+
+// truncateError 错误消息截断（Java truncateError，vector_error 列宽 500）。
+func truncateError(msg string, max int) string {
+	r := []rune(msg)
+	if len(r) > max {
+		return string(r[:max])
+	}
+	return msg
+}

@@ -32,12 +32,19 @@ type ParseResult struct {
 
 // Parse 按内容嗅探的 MIME 类型解析文档。
 func Parse(data []byte, fileName string) (*ParseResult, error) {
-	ct := DetectContentType(data, fileName)
-	text, err := parseByType(ct, data, fileName)
+	text, ct, err := ExtractText(data, fileName)
 	if err != nil {
 		return nil, err
 	}
 	return &ParseResult{Text: CleanText(text), ContentType: ct}, nil
+}
+
+// ExtractText 仅提取文本（不做清洗），返回 (文本, MIME 类型)。
+// 知识库链路用：解析后按 Java TextCleaningService.cleanText 单独清洗。
+func ExtractText(data []byte, fileName string) (string, string, error) {
+	ct := DetectContentType(data, fileName)
+	text, err := parseByType(ct, data, fileName)
+	return text, ct, err
 }
 
 // DetectContentType 基于文件内容嗅探 MIME，失败时按扩展名兜底。
@@ -84,6 +91,8 @@ func parseByType(ct string, data []byte, fileName string) (string, error) {
 		return parseDOCX(data)
 	case strings.Contains(ct, "msword"):
 		return parseDOC(data)
+	case strings.Contains(ct, "rtf"):
+		return ParseRTF(data), nil
 	case strings.HasPrefix(ct, "text/"), strings.Contains(ct, "json"), strings.Contains(ct, "xml"):
 		return string(data), nil
 	default:
@@ -91,6 +100,8 @@ func parseByType(ct string, data []byte, fileName string) (string, error) {
 		switch fileNameExt(fileName) {
 		case "md", "markdown", "mdown", "txt", "text":
 			return string(data), nil
+		case "rtf":
+			return ParseRTF(data), nil
 		case "docx":
 			return parseDOCX(data)
 		case "doc":
