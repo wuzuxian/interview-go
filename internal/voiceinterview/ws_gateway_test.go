@@ -368,8 +368,10 @@ func TestGateway建连消息形状逐字(t *testing.T) {
 	}
 }
 
-// 建连校验：会话不存在 404；非 IN_PROGRESS 409（票面要求，Java 原版缺校验的补齐）。
-func TestGateway拒绝不存在的会话与非进行中状态(t *testing.T) {
+// 建连校验：会话不存在 404（存在性防御）；任何状态均可建立连接（Java 原版
+// 完全无校验，spec 偏离 #11）。回归背景：曾加戏拒绝非 IN_PROGRESS 会话（409），
+// 导致前端 React StrictMode 双挂载下首连被自动结束后重连 409，页面「进去就断开」。
+func TestGateway拒绝不存在的会话但任意状态可连(t *testing.T) {
 	gf := newGatewayFixture(t, nil)
 
 	_, resp, err := gf.dialWS(t, 99999, "https://front.test")
@@ -384,13 +386,7 @@ func TestGateway拒绝不存在的会话与非进行中状态(t *testing.T) {
 	ended := inProgressSession(time.Hour)
 	ended.Status = &done
 	completedID := gf.f.store.addSession(ended)
-	_, resp, err = gf.dialWS(t, completedID, "https://front.test")
-	if err == nil {
-		t.Fatal("非进行中会话应拒绝升级")
-	}
-	if resp == nil || resp.StatusCode != http.StatusConflict {
-		t.Fatalf("应返回 409，实际: %v", resp)
-	}
+	gf.mustWSClient(t, completedID).drainEstablish(t)
 }
 
 // 升级来源校验沿 CORS 白名单（Java setAllowedOrigins）：白名单外 403、
@@ -824,14 +820,8 @@ func TestGateway断开自动结束会话并停ASR(t *testing.T) {
 		return gf.asr.finishTotal() >= 1
 	})
 
-	// 已结束的会话再建连：409。
-	_, resp, err := gf.dialWS(t, id, "https://front.test")
-	if err == nil {
-		t.Fatal("已结束会话应拒绝重建连")
-	}
-	if resp == nil || resp.StatusCode != http.StatusConflict {
-		t.Fatalf("应返回 409，实际: %v", resp)
-	}
+	// 已结束的会话再建连：接受（Java 无状态校验；StrictMode 重连依赖此行为）。
+	gf.mustWSClient(t, id).drainEstablish(t)
 }
 
 // start_phase 透传会话域（Java handleControl start_phase → interviewService.startPhase）。

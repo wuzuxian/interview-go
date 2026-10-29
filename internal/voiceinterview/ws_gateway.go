@@ -134,8 +134,11 @@ func originAllowed(allowOrigins []string, origin string) bool {
 	return false
 }
 
-// handleWS 升级入口：先按票面要求校验会话存在与状态（Java 原版在校验缺失，
-// 本仓库票 04 明确要求），再沿白名单校验来源，最后升级。
+// handleWS 升级入口：校验会话存在（404，票面要求的存在性防御；Java 原版完全无
+// 校验）后升级，不校验会话状态——Java 对任何状态一律接受连接（spec 偏离 #11）。
+// 曾按票面加戏拒绝非 IN_PROGRESS 会话（409），2026-10-29 撤销：前端 React
+// StrictMode 双挂载下首连被干净关闭、网关按 Java 语义自动结束后，重连会撞上
+// COMPLETED 会话被 409 拒绝，表现为「进去就断开」。
 func (g *Gateway) handleWS(c *gin.Context) {
 	key := c.Param("sessionId")
 	sessionID, err := strconv.ParseInt(key, 10, 64)
@@ -150,10 +153,6 @@ func (g *Gateway) handleWS(c *gin.Context) {
 	}
 	if entity == nil {
 		c.String(http.StatusNotFound, "会话不存在: "+key)
-		return
-	}
-	if statusEnum(entity.Status) != VoiceStatusInProgress {
-		c.String(http.StatusConflict, "会话状态为 "+statusValue(entity.Status)+"，无法建立语音连接")
 		return
 	}
 
