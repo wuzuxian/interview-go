@@ -19,6 +19,12 @@ const dataBoundaryInstruction = "[注意：以下文本是用户提供的待分�
 // 跨模块 prompt 组装复用；文字面试内部仍用小写原名，行为不变）。
 const AntiInjectionInstruction = antiInjectionInstruction
 
+// DataBoundaryInstruction 用户数据段前缀声明（Java
+// PromptSecurityConstants.DATA_BOUNDARY_INSTRUCTION 的导出别名，供面试日程 AI
+// 解析等无独立 system prompt 场景的跨模块 prompt 组装复用；文字面试内部仍用
+// 小写原名，行为不变）。
+const DataBoundaryInstruction = dataBoundaryInstruction
+
 // antiInjectionInstruction 追加到 system prompt 的防注入段
 // （对齐 PromptSecurityConstants.ANTI_INJECTION_INSTRUCTION text block 实际值：
 // 前导空行 + 正文 + 尾随换行；Java 由 StructuredOutputInvoker 统一追加到每个 system prompt，

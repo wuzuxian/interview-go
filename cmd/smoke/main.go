@@ -64,6 +64,7 @@ type options struct {
 	keep          bool
 	kbMain        int
 	kbFollow      int
+	sweeperWait   time.Duration
 }
 
 func main() {
@@ -76,14 +77,18 @@ func main() {
 		err = runVoice(opts, os.Stdout)
 	case "knowledgebase":
 		err = runKnowledgeBase(opts, os.Stdout)
+	case "schedule":
+		err = runSchedule(opts, os.Stdout)
 	default:
-		err = fmt.Errorf("参数 -mode 非法：%q（可选 text|voice|knowledgebase）", opts.mode)
+		err = fmt.Errorf("参数 -mode 非法：%q（可选 text|voice|knowledgebase|schedule）", opts.mode)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n冒烟失败: %v\n", err)
 		os.Exit(1)
 	}
 	switch opts.mode {
+	case "schedule":
+		fmt.Println("\n冒烟通过：面试日程全链路（规则解析·飞书/腾讯→创建强制 PENDING→详情→列表过滤→更新→状态流转→过期取消→清理）全部校验点通过。")
 	case "voice":
 		fmt.Println("\n冒烟通过：语音面试全链路（前置检查→创建→WS 开场白→TTS 音频重采样回喂 ASR→提交→字幕/流式文本/音频块→结束→评估→报告→清理）全部校验点通过。")
 	case "knowledgebase":
@@ -97,7 +102,7 @@ func main() {
 func parseFlags() *options {
 	opts := &options{}
 	flag.StringVar(&opts.mode, "mode", "text",
-		"冒烟模式：text=文字面试全链路（默认）；voice=语音面试全链路（需 voice_config 已配置真实 ASR/TTS Key）；knowledgebase=知识库全链路（需 PG/pgvector/Redis/S3 与真实模型服务）")
+		"冒烟模式：text=文字面试全链路（默认）；voice=语音面试全链路（需 voice_config 已配置真实 ASR/TTS Key）；knowledgebase=知识库全链路（需 PG/pgvector/Redis/S3 与真实模型服务）；schedule=面试日程全链路（不打 LLM；过期取消步需短巡检间隔启动服务）")
 	flag.StringVar(&opts.baseURL, "base-url", defaultBaseURL,
 		"服务地址（须包含协议，如 http://127.0.0.1:8080）")
 	flag.DurationVar(&opts.timeout, "timeout", defaultTimeout,
@@ -120,6 +125,8 @@ func parseFlags() *options {
 		"知识库面试主问题数量（1-20；仅 knowledgebase 模式使用）")
 	flag.IntVar(&opts.kbFollow, "kb-follow", 1,
 		"知识库面试每题追问数量（0-5；仅 knowledgebase 模式使用）")
+	flag.DurationVar(&opts.sweeperWait, "sweeper-wait", 30*time.Second,
+		"过期取消步轮询上限（仅 schedule 模式；服务需以短巡检间隔启动，如 APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s；0 跳过该步）")
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
 		fmt.Fprint(out, `smoke - 真实全链路冒烟命令（票 09 文字模式 / 票 10 语音模式 / 票 05 知识库模式，发布前人工验收项）
@@ -147,6 +154,16 @@ func parseFlags() *options {
   来源上下文）→ 模拟作答提交（末题自动交卷）→ 轮询评估至 COMPLETED →
   报告校验（总分/逐题/参考答案齐全）→ DELETE 清理（场次 + 知识库，
   可用 -keep 跳过；参数 -kb-main/-kb-follow）。
+
+-mode schedule 面试日程链路（票 04，不打真实 LLM）：
+  健康检查 → 规则解析三平台样例（飞书/腾讯直解：置信度 0.95 与 group() 全
+  匹配现状断言；Zoom 样例走特征探测→飞书解析器兜底链路；纯 Zoom 文本无
+  标签时必走 AI 兜底，AI 路径已由单测覆盖）→ 创建（传入 status 被忽略、
+  roundNumber 缺省 1）→ 详情（12 字段、时间无时区格式）→ 列表过滤
+  （状态/时间范围闭区间）→ 更新（业务字段拷贝、status 不变）→ 状态流转
+  （PATCH→COMPLETED、PUT 任意跳回）→ 过期取消（插过期 PENDING 行轮询至
+  CANCELLED；服务需以 APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s
+  短间隔启动，否则 -sweeper-wait 内超时判失败；0 跳过）→ DELETE 清理。
 
 每步打印校验点与耗时；任一步失败以非零退出码结束，错误信息含步骤名与响应摘要。
 
