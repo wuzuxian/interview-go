@@ -382,6 +382,12 @@ func main() {
 	defer kbQRecovery.Stop()
 	kbQuestionSvc := knowledgebase.NewQuestionService(kbRepo, kbQProducer, slogger)
 	kbQuestionCtl := knowledgebase.NewQuestionController(kbQuestionSvc, rl)
+	// 知识库面试（票 05）：洗牌抽题 + 容量预判，经 interview 模块的
+	// 「从题目集合创建场次」接缝（sessionSvc）落统一 interview_sessions
+	// （sourceType=KNOWLEDGE_BASE + knowledge_base_id + interview_category，
+	// Redis 缓存 + DB 双写）；评估以题目自带参考基线评分。
+	kbInterviewSvc := knowledgebase.NewInterviewService(kbRepo, sessionSvc, slogger)
+	kbInterviewCtl := knowledgebase.NewInterviewController(kbInterviewSvc)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
@@ -406,6 +412,7 @@ func main() {
 	kbCtl.RegisterRoutes(api)
 	kbChatCtl.RegisterRoutes(api)
 	kbQuestionCtl.RegisterRoutes(api)
+	kbInterviewCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

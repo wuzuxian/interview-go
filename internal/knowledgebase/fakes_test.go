@@ -1003,12 +1003,23 @@ func (s *fakeStore) questionsOf(kbID int64) []KnowledgeBaseQuestionEntity {
 // questionsFiltered status 过滤版本的快照（updatedAt 倒序，同刻以 ID 倒序定序，
 // 镜像 Java 查询在自增主键下的稳定输出）。
 func (s *fakeStore) questionsFiltered(kbID int64, status *QuestionBankStatus) []KnowledgeBaseQuestionEntity {
+	return s.questionsScoped(kbID, status, "", "")
+}
+
+// questionsScoped 难度/方向收窄的题目快照（空串表示不过滤）。
+func (s *fakeStore) questionsScoped(kbID int64, status *QuestionBankStatus, difficulty, category string) []KnowledgeBaseQuestionEntity {
 	var out []KnowledgeBaseQuestionEntity
 	for _, q := range s.questions {
 		if q.KnowledgeBaseID != kbID {
 			continue
 		}
 		if status != nil && q.Status != *status {
+			continue
+		}
+		if difficulty != "" && (q.Difficulty == nil || *q.Difficulty != difficulty) {
+			continue
+		}
+		if category != "" && (q.Category == nil || *q.Category != category) {
 			continue
 		}
 		out = append(out, *q)
@@ -1045,6 +1056,18 @@ func (s *fakeStore) FindQuestionsByKBAndStatusOrderByUpdatedAtDesc(ctx context.C
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.questionsFiltered(kbID, &status), nil
+}
+
+func (s *fakeStore) FindQuestionsByKBAndDifficultyAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.questionsScoped(kbID, &status, difficulty, ""), nil
+}
+
+func (s *fakeStore) FindQuestionsByKBAndDifficultyAndCategoryAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty, category string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.questionsScoped(kbID, &status, difficulty, category), nil
 }
 
 func (s *fakeStore) FindCategoryCounts(ctx context.Context, kbID int64) ([]CategoryCount, error) {

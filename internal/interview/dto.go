@@ -114,7 +114,7 @@ type CurrentQuestionResponse struct {
 
 // SessionListItemDTO GET /api/interview/sessions 列表项，对应 Java SessionListItemDTO。
 // 字段一次建全：评估相关列（evaluateStatus/evaluateError/overallScore）票 06 才有真实值；
-// sourceType/knowledgeBaseId/interviewCategory 知识库入口（不在本仓范围）先为零值。
+// sourceType/knowledgeBaseId/interviewCategory 票 05 起由知识库面试创建链路接真值。
 type SessionListItemDTO struct {
 	SessionID         string     `json:"sessionId"`
 	SkillID           *string    `json:"skillId"`

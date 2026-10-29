@@ -40,6 +40,26 @@ func (r *Repo) FindQuestionsByKBAndStatusOrderByUpdatedAtDesc(ctx context.Contex
 	return list, err
 }
 
+// FindQuestionsByKBAndDifficultyAndStatusOrderByUpdatedAtDesc 按难度 + 状态过滤
+// （Java KnowledgeBaseInterviewService.selectActiveQuestions 的无方向分支）。
+func (r *Repo) FindQuestionsByKBAndDifficultyAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error) {
+	var list []KnowledgeBaseQuestionEntity
+	err := r.db.WithContext(ctx).
+		Where("knowledge_base_id = ? AND difficulty = ? AND status = ?", kbID, difficulty, status).
+		Order("updated_at DESC").Find(&list).Error
+	return list, err
+}
+
+// FindQuestionsByKBAndDifficultyAndCategoryAndStatusOrderByUpdatedAtDesc
+// 按难度 + 方向 + 状态过滤（Java selectActiveQuestions 的方向分支）。
+func (r *Repo) FindQuestionsByKBAndDifficultyAndCategoryAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty, category string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error) {
+	var list []KnowledgeBaseQuestionEntity
+	err := r.db.WithContext(ctx).
+		Where("knowledge_base_id = ? AND difficulty = ? AND category = ? AND status = ?", kbID, difficulty, category, status).
+		Order("updated_at DESC").Find(&list).Error
+	return list, err
+}
+
 // FindCategoryCounts 方向统计（Java findCategoryCounts JPQL 逐字：
 // 非空方向 group by，count 降序、category 升序）。
 func (r *Repo) FindCategoryCounts(ctx context.Context, kbID int64) ([]CategoryCount, error) {

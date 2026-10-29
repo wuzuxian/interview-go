@@ -79,6 +79,10 @@ type Store interface {
 
 	FindQuestionsByKBOrderByUpdatedAtDesc(ctx context.Context, kbID int64) ([]KnowledgeBaseQuestionEntity, error)
 	FindQuestionsByKBAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error)
+	// 知识库面试选题查询（票 05，Java KnowledgeBaseInterviewService.selectActiveQuestions
+	// 的两条派生查询：按难度取 ACTIVE，方向可空；updated_at 倒序）。
+	FindQuestionsByKBAndDifficultyAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error)
+	FindQuestionsByKBAndDifficultyAndCategoryAndStatusOrderByUpdatedAtDesc(ctx context.Context, kbID int64, difficulty, category string, status QuestionBankStatus) ([]KnowledgeBaseQuestionEntity, error)
 	// FindCategoryCounts 方向统计：非空方向计数，count 降序、category 升序（Java JPQL 逐字）。
 	FindCategoryCounts(ctx context.Context, kbID int64) ([]CategoryCount, error)
 	// FindTop20QuestionsByKBAndDifficultyOrderByUpdatedAtDesc 出题防重复段（Java findTop20...）。

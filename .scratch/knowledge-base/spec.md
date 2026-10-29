@@ -107,3 +107,52 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但知识库产品�
 - **共存是协议要求，不是部署要求**：当前只有 Go 在跑，但状态机、Redis Stream key/group、向量 metadata 协议按两实例共存逐字对齐（ADR 0005）；将来 Java 复用或数据混跑（含互相补投恢复）无虞。
 - **术语**：文档用语遵循 GLOSSARY「知识库与 RAG」节——知识库=单文档语料单位；题库=模型离线生成（与方向静态「参考题库」相对）。
 - **验收**：每票 TDD 自验；全阶段完成后 code-review（沿语音面试流程）；最终以 smoke 知识库模式真链路通过收口。
+
+## 与 Java 行为的有意偏离（收口清单，2026-10-29）
+
+五票完成后按票 Comments 归并收口（先例：mock-interview 11 条、voice-interview 11 条）。前 3 条为 spec 预案内偏离。
+
+**预案内**
+
+1. Micrometer 全链路指标体系与 ragEvaluation 评测任务未移植：以 slog 中文阶段日志（改写/检索/融合/流式起止等）替代。（票 03）
+2. RTF 采用基础剥离器：支持 `\uN`/UTF-8 序列/cp1252；复杂嵌入对象（图片/OLE）不解析；`ansicpg936` 原生 GBK 字节流可能乱码（需 x/text 依赖，超票面授权未引入）。（票 01）
+3. PDF/DOC 解析引擎差异：Java Tika AutoDetectParser vs Go pdftotext 外部工具 + 纯 Go 兜底双路，提取文本的空白/排版细节不完全一致，切片随之有差，检索质量可接受。（票 01）
+
+**阶段一（上传/向量化/管理）**
+
+4. 5MB 文本上限实现点：Java 在 Tika 写入流中中断，Go 解析完成后整体校验拒绝——外部契约相同（解析失败），失败点略后。（票 01）
+5. tokenizer 特殊 token：jtokkit 对 `<|endoftext|>` 等抛异常，Go 对齐为返回错误走向量化失败路径。（票 01）
+6. fileKey 文件名净化：Java 转拼音大驼峰，Go 沿 resumes 先例替换为下划线（仅影响存储键美观）。（票 01）
+7. cleanText 首尾修剪用 Go TrimSpace（Unicode 空白集合比 Java strip 略宽）。（票 01）
+8. Stream maxlen 近似裁剪、心跳 monotonic clock、promote+配置快照合并为单事务。（票 01）
+9. 限流窗口语义：Java 切面为 Redis ZSET 滑动窗口，Go ratelimit 为共享固定窗口（INCR+PEXPIRE）——既有 infra（resume 同用），数值（3/3、2/2、10/10、5/5）已逐一对齐，窗口形态未改。（票 02，票 03/04 沿用）
+10. sortEntities 的 null 拆箱：Java 对 null fileSize/accessCount/questionCount 比较时 NPE，Go 按 0 参与排序（正常数据列值非空，行为不可区分）。（票 02）
+11. 非法请求体 JSON：Go 返回 400「请求参数错误/请求体格式不正确」；Java 走全局兜底 500「系统繁忙」（前端恒发合法 JSON，不可达路径）。（票 02，票 04/05 同口径）
+12. 下载文件名编码自实现 javaURLEncode（URLEncoder.encode + replace("+","%20") 逐字节等价，表驱动锁定）；上传/下载时间字段为 Go RFC3339（带时区后缀）vs Java LocalDateTime ISO（无时区），前端按字符串透传展示。（票 02）
+13. search 缺 keyword 参数：Java @RequestParam 必填返回参数错误，Go 空参按空白关键词返回全量列表（前端恒带参）。（票 02）
+
+**阶段二（RAG 查询/会话）**
+
+14. 会话列表/详情的知识库数组顺序：Java HashSet 迭代序不稳定，Go 按知识库 id 升序稳定输出；会话 DTO 的 knowledgeBaseIds 按请求顺序输出。（票 03）
+15. 字符长度口径：分档计长（`\s` 剥离后）、拒答探测窗口 120 字符、助手回复截 200 字符、出题上下文 5000 截断、llmProvider 64 上限按 Go rune 计（Java 为 UTF-16 code unit），差异仅在 emoji/增补平面字符出现，中文场景不可区分。（票 03，票 04 同口径）
+16. 会话流历史加载 DB 失败：Java getStreamAnswer 直接抛出（500 Result），Go 记 warn 后以空历史继续（多轮场景更稳，不阻断回答）。（票 03）
+17. SSE 响应头：Go 设 `Content-Type: text/event-stream` + `Cache-Control: no-cache`（Java WebFlux 另带 charset 与 connection 头，前端不读取）。（票 03）
+18. 检索回退路径前置过滤失败后重 embed 再查（与 Java 二次调用 similaritySearch 的重嵌入一致）；DB 条件更新 SQL 执行语义由 smoke 真库兜底（测试决策 3）。（票 03）
+
+**阶段三（题库）**
+
+19. 结构化输出 system prompt 组装顺序与重试提示位置：Java「模板 + BeanOutputConverter.getFormat() + 防注入段」、重试提示追加 system；Go 经 ai.InvokeStructured 接缝为「模板 + 防注入段 + 格式指令」、解析错误追加 user prompt。格式指令为 interview 模块既有通用 JSON 格式说明（非 BeanOutputConverter 完整 Schema 文本），字段约束由 prompt 话术与解析兜底。（票 04）
+20. 结构化输出整体失败消息：Java「知识库题库生成失败：请稍后重试」，Go 沿 ai.InvokeStructured 语义带最后解析错误（码同 3006；对外 questionGenError 恒为安全文案，差异不可达）。（票 04）
+21. LLM 调用走 JSON 响应模式模型（aibridge.JSONChatModelFor）而非 Java 普通 ChatClient + BeanOutputConverter 文本解析——沿 interview 模块既有接缝先例。（票 04）
+22. 枚举解析错误：题目列表 status 查询参数与请求体 status 非法值 → 400 Result「无效的题目状态: 原值」（Java 为 Spring 类型转换 400 / HttpMessageNotReadable，非 Result 形状，前端不发非法值，不可观察）。（票 04）
+23. 恢复扫描每轮上限 10（Java findStaleQuestionGenerationTasks 无上限全扫；超限下一轮巡检续投）；恢复窗口（QUEUED 2min、PROCESSING 20min、巡检 60s）按 Java 常量对齐。（票 04）
+24. golang.org/x/text（unicode/norm，实现 Normalizer.NFC）由 indirect 提升为直接依赖——无新增第三方模块。（票 04）
+25. 防注入清洗复用 interview.PromptSanitizer（跨模块复用先例 voiceinterview），四个清洗正则与随机边界标签逐字一致。（票 04）
+
+**阶段四（知识库面试）**
+
+26. 「从题目集合创建场次」的缓存双写失败按尽力而为处理（warn 不阻断），Java sessionCache.saveSession 异常向上传播——沿文字面试创建的仓库既有约定（读路径 DB 兜底可重建）。（票 05）
+27. 追问池/题目要点解析失败静默降级空列表（Java log.warn 后降级）——沿题库模块既有 readStringList/readFollowUps 口径，行为（空池）一致，仅日志可见性差异。（票 05）
+28. 随机源 Java ThreadLocalRandom → Go math/rand/v2；洗牌算法同构（主问题 Collections.shuffle 末端 Fisher-Yates、追问前端局部 Fisher-Yates 且不改原列表），随机源注入为测试缝，生产行为等价。（票 05）
+
+共 28 条。验收留痕：真链路 smoke（-mode knowledgebase）由维护者在真实环境执行收口。
