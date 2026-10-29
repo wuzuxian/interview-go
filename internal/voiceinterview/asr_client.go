@@ -11,7 +11,8 @@
 //     建连：GET <url>?model=<model>（OmniRealtimeParam.getUrl() 拼接），
 //     握手头 Authorization: Bearer <key> 与 X-DashScope-DataInspection: enable；
 //     会话更新：{"event_id":"event_N","type":"session.update","session":{…}}，session 内：
-//     modalities（Java 传 [TEXT]）、turn_detection{type,threshold,prefix_padding_ms,
+//     modalities（Java 传枚举 OmniRealtimeModality.TEXT，SDK 序列化为小写线协议值）、
+//     turn_detection{type,threshold,prefix_padding_ms,
 //     silence_duration_ms}（仅 enableTurnDetection 时，prefix_padding_ms 为 SDK
 //     builder 默认 0）、input_audio_transcription{sample_rate,input_audio_format,
 //     language}；SDK 未配置的 null 字段（voice / input_audio_format /
@@ -19,7 +20,7 @@
 //     音频推送：{"event_id":"event_N","type":"input_audio_buffer.append","audio":"<base64>"}；
 //     结束：{"event_id":"event_N","type":"session.finish"}。
 //   - 会话更新取值对齐 QwenAsrService.startTranscriptionLocked 的 OmniRealtimeConfig：
-//     modalities=[TEXT]、server_vad、静音时长来自语音配置（Java yml 默认 2000ms）。
+//     modalities=["text"]、server_vad、静音时长来自语音配置（Java yml 默认 2000ms）。
 //
 // 行为常量对齐 Java：ready 检查 10s、未就绪至多重试 2 次（Handler
 // ASR_READY_CHECK_DELAY_SECONDS=10 / MAX_ASR_READY_RETRY=2）；sendAudio 就绪等待 1200ms；
@@ -193,7 +194,7 @@ func (c *AsrClient) lockFor(sessionID string) *sync.Mutex {
 	return l
 }
 
-// Start 新建识别会话：建连 → session.update（modalities=TEXT、server_vad、静音时长）→
+// Start 新建识别会话：建连 → session.update（modalities=text、server_vad、静音时长）→
 // ready。连接与就绪是异步的，失败经 OnError 回调上报；会话已存在时报错
 // （Java「Session already exists」）。Start 同时启动 ready 监督：
 // 超时未就绪则 OnReconnecting + Restart，至多重试 cfg.AsrReadyRetries 次。
@@ -262,7 +263,9 @@ func (c *AsrClient) connect(s *asrSession) {
 
 	// session.update（OmniRealtimeConfig.getConfig 形状，见文件头注释；null 字段省略）。
 	sessionBody := map[string]any{
-		"modalities": []string{"TEXT"},
+		// 线协议值必须小写：DashScope 仅接受 'text'/'audio'（Java 枚举 TEXT 由 SDK 序列化为
+		// 小写；bug3 教训：抄枚举名字面量会被服务端以 invalid_value 拒绝并断开）。
+		"modalities": []string{"text"},
 	}
 	if c.settings.EnableTurnDetection {
 		sessionBody["turn_detection"] = map[string]any{

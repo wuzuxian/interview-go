@@ -183,10 +183,11 @@ func TestAsrClient握手与会话更新参数逐字对齐(t *testing.T) {
 	}
 
 	session := srv.lastSessionUpdate()
-	// OmniRealtimeConfig.getConfig()：modalities=[TEXT]（QwenAsrService 传 TEXT 单元素）。
+	// 线协议值小写：Java QwenAsrService 传枚举 OmniRealtimeModality.TEXT，SDK 序列化为
+	// "text"（bug3 教训：DashScope 仅接受小写，大写枚举名会被 invalid_value 拒绝）。
 	mods, ok := session["modalities"].([]any)
-	if !ok || len(mods) != 1 || mods[0] != "TEXT" {
-		t.Errorf("modalities 应为 [\"TEXT\"]，实际 %v", session["modalities"])
+	if !ok || len(mods) != 1 || mods[0] != "text" {
+		t.Errorf("modalities 应为 [\"text\"]（小写线协议值），实际 %v", session["modalities"])
 	}
 	// 打断检测：type=server_vad、threshold、prefix_padding_ms=0（SDK builder 默认）、静音 2000ms。
 	td, ok := session["turn_detection"].(map[string]any)
