@@ -16,6 +16,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	github.com/pgvector/pgvector-go v0.4.1
 	github.com/redis/go-redis/v9 v9.23.0

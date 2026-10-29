@@ -25,23 +25,24 @@ import (
 	"github.com/wuzuxian/interview/internal/resume"
 	"github.com/wuzuxian/interview/internal/storage"
 	"github.com/wuzuxian/interview/internal/vector"
+	"github.com/wuzuxian/interview/internal/voiceinterview"
 )
 
 // AppConfig 业务配置（app.* 段），键与 Java 版 application.yml 对齐。
 type AppConfig struct {
 	AI struct {
-		DefaultProvider          string                              `config:"default_provider" default:"dashscope"`
-		DefaultEmbeddingProvider string                              `config:"default_embedding_provider" default:"dashscope"`
-		EmbeddingDimensions      int                                 `config:"embedding_dimensions" default:"1024"`
-		EncryptionKey            string                              `config:"api_key_encryption_key"`
-		AllowFallbackKey         bool                                `config:"allow_fallback_encryption_key" default:"false"`
-		StructuredMaxAttempts    int                                 `config:"structured_max_attempts" default:"2"`
-		StructuredIncludeLastError            bool   `config:"structured_include_last_error" default:"true"`
-		StructuredRetryUseRepairPrompt        bool   `config:"structured_retry_use_repair_prompt" default:"true"`
-		StructuredRetryAppendStrictJSONInstruction bool `config:"structured_retry_append_strict_json_instruction" default:"true"`
-		StructuredErrorMessageMaxLength       int    `config:"structured_error_message_max_length" default:"200"`
-		LLMCallTimeout           time.Duration                       `config:"llm_call_timeout" default:"120s"`
-		Providers                map[string]llmprovider.SeedProvider `config:"providers"`
+		DefaultProvider                            string                              `config:"default_provider" default:"dashscope"`
+		DefaultEmbeddingProvider                   string                              `config:"default_embedding_provider" default:"dashscope"`
+		EmbeddingDimensions                        int                                 `config:"embedding_dimensions" default:"1024"`
+		EncryptionKey                              string                              `config:"api_key_encryption_key"`
+		AllowFallbackKey                           bool                                `config:"allow_fallback_encryption_key" default:"false"`
+		StructuredMaxAttempts                      int                                 `config:"structured_max_attempts" default:"2"`
+		StructuredIncludeLastError                 bool                                `config:"structured_include_last_error" default:"true"`
+		StructuredRetryUseRepairPrompt             bool                                `config:"structured_retry_use_repair_prompt" default:"true"`
+		StructuredRetryAppendStrictJSONInstruction bool                                `config:"structured_retry_append_strict_json_instruction" default:"true"`
+		StructuredErrorMessageMaxLength            int                                 `config:"structured_error_message_max_length" default:"200"`
+		LLMCallTimeout                             time.Duration                       `config:"llm_call_timeout" default:"120s"`
+		Providers                                  map[string]llmprovider.SeedProvider `config:"providers"`
 	} `config:"ai"`
 	Resume struct {
 		AllowedTypes []string `config:"allowed_types"`
@@ -49,7 +50,10 @@ type AppConfig struct {
 	} `config:"resume"`
 	// Interview 模拟面试配置段（app.interview），结构定义在 interview 包内与业务同处。
 	Interview interview.Config `config:"interview"`
-	Storage   struct {
+	// VoiceInterview 语音面试配置段（app.voice_interview），结构定义在
+	// voiceinterview 包内；默认值随票在 config.go 的 default 标签里逐票补齐。
+	VoiceInterview voiceinterview.Config `config:"voice_interview"`
+	Storage        struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
 		SecretKey        string `config:"secret_key"`
@@ -242,6 +246,82 @@ func main() {
 	reportSvc := interview.NewReportService(sessionRepo, evalRunner, interviewSvc, sessionCache, slogger)
 	interviewCtl := interview.NewController(interviewSvc, sessionSvc, reportSvc, rl, appCfg.Interview.RateLimit)
 
+	// 语音面试模块（票 01：会话域 + REST 契约。票 04：WS 网关——每连接读最新语音
+	// 配置，设置页修改热生效；模型回合挂钩留空，内置空实现，票 06 接入真实 LLM+TTS
+	// 管道。票 08：评估链路——评估服务复用文字面试的 evalRunner
+	// （app.interview.evaluation 引擎配置与降级接缝共用）与 interviewSvc 的方向评估
+	// 参考段；repo + Redis 会话缓存 + 评估流读写 + 消费侧与恢复调度已接入。
+	// 票 09：暂停超时巡检（30s，4:30 预警/5:00 暂停断连）与僵尸清理
+	// （并入 60s 恢复调度器，IN_PROGRESS 超 2h 强制结束）已接入；优雅关闭时
+	// voiceGateway.Close() 关闭全部活动连接，走断开自动结束路径）。
+	voiceRepo := voiceinterview.NewRepo(db.DB)
+	voiceCache := voiceinterview.NewSessionCache(rdb.Client, appCfg.VoiceInterview, slogger)
+	voiceStream := voiceinterview.NewRedisEvalStream(rdb.Client)
+	voiceEvalSvc := voiceinterview.NewEvaluationService(voiceinterview.EvaluationServiceDeps{
+		Store:  voiceRepo,
+		Eval:   evalRunner,
+		Refs:   interviewSvc,
+		Logger: slogger,
+	})
+	voiceSvc := voiceinterview.NewService(voiceinterview.ServiceDeps{
+		Repo:       voiceRepo,
+		Cache:      voiceCache,
+		Stream:     voiceStream,
+		Logger:     slogger,
+		EvalDetail: voiceEvalSvc,
+		Recovery: voiceinterview.EvalRecoveryParams{
+			PendingRequeueAfter:  appCfg.VoiceInterview.EvaluatePendingRequeueAfter,
+			ProcessingFailAfter:  appCfg.VoiceInterview.EvaluateProcessingFailAfter,
+			StaleInProgressAfter: appCfg.VoiceInterview.StaleInProgressAfter,
+		},
+	})
+	voiceEvalConsumer := voiceinterview.NewVoiceEvaluateConsumer(voiceStream, voiceRepo, voiceEvalSvc, slogger)
+	voiceEvalConsumer.Start(ctx)
+	defer voiceEvalConsumer.Stop()
+	voiceEvalRecovery := voiceinterview.NewEvalRecoveryScheduler(voiceSvc, appCfg.VoiceInterview.CleanupInterval, slogger)
+	voiceEvalRecovery.Start(ctx)
+	defer voiceEvalRecovery.Stop()
+	voiceCtl := voiceinterview.NewController(voiceSvc)
+	// 票 06：LLM 流式管道接入网关回合挂钩——流式模型按场次 llmProvider 经
+	// *aibridge.Bridge 解析（VoiceStreamModelFor，结构性满足 voiceinterview 接缝）；
+	// prompt 方向内容复用 interviewSvc 的 Skill 资源子系统（ADR 0002 静态嵌入偏离）；
+	// 简历文本读 resumeRepo；TTS 运行时配置每回合重读（设置页修改热生效）。
+	voiceSettings := voiceinterview.NewProviderConfigSource(providerSvc)
+	// 票 07：上下文压缩加载器——有界历史装配（摘要行 + 最近窗口 + 至多一个待摘要
+	// 批）；SUMMARY 摘要用与语音面试官独立的普通模型（bridge.VoicePlainCompleterFor，
+	// 无工具无对话记忆注入），新边界在会话行悲观锁内写回；摘要失败降级最近窗口，
+	// 回合不中断。
+	voiceHistory := voiceinterview.NewHistoryLoader(
+		voiceRepo,
+		voiceinterview.NewCompressor(appCfg.VoiceInterview.ContextCompression, bridge, slogger),
+		appCfg.VoiceInterview.ContextCompression,
+		slogger)
+	voicePipeline := voiceinterview.NewTurnPipeline(voiceinterview.TurnPipelineDeps{
+		Svc:      voiceSvc,
+		Store:    voiceRepo,
+		Models:   bridge,
+		Settings: voiceSettings,
+		TTS:      voiceinterview.NewTtsClient(appCfg.VoiceInterview, slogger),
+		Prompts:  voiceinterview.NewPromptService(interview.NewPromptSanitizer(slogger), interviewSvc, slogger),
+		Resumes:  resumeRepo,
+		History:  voiceHistory,
+		Cfg:      appCfg.VoiceInterview,
+		Logger:   slogger,
+	})
+	voiceGateway := voiceinterview.NewGateway(voiceinterview.GatewayDeps{
+		Service:        voiceSvc,
+		Settings:       voiceSettings,
+		Config:         appCfg.VoiceInterview,
+		AllowedOrigins: appCfg.CORS.AllowedOrigins,
+		Turn:           voicePipeline.Turn,
+		Logger:         slogger,
+	})
+	go voiceGateway.WarmupOpeningAudio(ctx) // 开场音频预热（默认关，开启时异步不阻塞启动）
+	// 票 09：不活动巡检（30s 节拍：4:30 预警一次、5:00 暂停断连停 ASR）。
+	voiceInactivity := voiceinterview.NewInactivitySweeper(voiceGateway, appCfg.VoiceInterview, slogger)
+	voiceInactivity.Start(ctx)
+	defer voiceInactivity.Stop()
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -250,6 +330,7 @@ func main() {
 			ginserver.AllowCORS(appCfg.CORS.AllowedOrigins...),
 		),
 		ginserver.WithOnShutdown(func(ctx context.Context) {
+			voiceGateway.Close() // 关闭活动 WS：断开路径自动结束进行中的会话并触发评估
 			logger.Info("on shutdown: 资源清理完成")
 		}),
 	)
@@ -260,6 +341,8 @@ func main() {
 	providerCtl.RegisterRoutes(api)
 	resumeCtl.RegisterRoutes(api)
 	interviewCtl.RegisterRoutes(api)
+	voiceCtl.RegisterRoutes(api)
+	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})
 	})

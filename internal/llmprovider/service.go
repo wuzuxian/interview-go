@@ -422,6 +422,14 @@ func (s *Service) getVoiceConfig() (asr AsrConfig, tts TtsConfig, apiKey string,
 	return asr, tts, apiKey, nil
 }
 
+// VoiceRuntimeConfig 公开读取语音运行时配置：ASR/TTS 持久化结构与解密后的共享
+// API Key。供语音面试模块的 VoiceConfigSource 适配器消费（每次 WS 建连重读，
+// 设置接口修改后热生效）；Key 明文仅用于与 DashScope 握手，调用方不得写入日志
+// 或错误信息。
+func (s *Service) VoiceRuntimeConfig() (asr AsrConfig, tts TtsConfig, apiKey string, err error) {
+	return s.getVoiceConfig()
+}
+
 // GetAsrConfig GET /voice/asr。
 func (s *Service) GetAsrConfig() (*AsrConfigDTO, error) {
 	asr, _, apiKey, err := s.getVoiceConfig()

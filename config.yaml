@@ -151,6 +151,12 @@ app:
       resume_max_chars: 3000
       max_reference_chars: 6000
 
+  # 语音面试（票 01：会话域 + REST；后续票在此段追加阶段判据/上下文压缩等键，
+  # 默认值见 internal/voiceinterview/config.go 的 default 标签）
+  voice_interview:
+    # 会话缓存 TTL（Java Redisson bucket TTL 1h）
+    session_cache_ttl: 1h
+
   storage:
     endpoint: http://localhost:9000
     access_key: rustfsadmin
