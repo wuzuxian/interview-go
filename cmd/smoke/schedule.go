@@ -186,7 +186,7 @@ func (sc *scheduleSmoke) stepCreate(ctx context.Context) error {
 	if out.RoundNumber == nil || *out.RoundNumber != 1 {
 		return fmt.Errorf("roundNumber = %v, want 1（缺省）", out.RoundNumber)
 	}
-	sc.sm.logf("已创建 id=%d status=PENDING（传入 status 被忽略）interviewTime=%s", out.ID, out.InterviewTime.Time().Format(time.RFC3339))
+	sc.sm.logf("已创建 id=%d status=PENDING（传入 status 被忽略）interviewTime=%s", out.ID, out.InterviewTime.Time().Format("2006-01-02T15:04:05"))
 	return nil
 }
 
@@ -242,17 +242,22 @@ func (sc *scheduleSmoke) stepListFilters(ctx context.Context) error {
 		}
 	}
 
-	// 时间范围：以创建行时间为 end（闭区间应命中），范围为空区间则不命中
+	// 时间范围：以创建行时间为 end（闭区间应命中）。边界串以无时区墙钟构造并按
+	// UTC 解析回比较值——响应中的 naive 时间同样按 UTC 解析（墙钟一致）；切勿与
+	// 本地时间的绝对时刻直接比较（差 8 小时，smoke 首跑曾踩）。
 	at := time.Now().Add(48 * time.Hour)
-	q := fmt.Sprintf("?start=%s&end=%s",
-		at.Add(-time.Hour).Format("2006-01-02T15:04:05"), at.Format("2006-01-02T15:04:05"))
+	endStr := at.Format("2006-01-02T15:04:05")
+	startStr := at.Add(-time.Hour).Format("2006-01-02T15:04:05")
+	q := fmt.Sprintf("?start=%s&end=%s", startStr, endStr)
 	var inRange []interviewschedule.InterviewScheduleDTO
 	if err := sc.sm.doJSON(ctx, http.MethodGet, "/api/interview-schedule"+q, nil, &inRange); err != nil {
 		return err
 	}
+	startWall, _ := time.Parse("2006-01-02T15:04:05", startStr)
+	endWall, _ := time.Parse("2006-01-02T15:04:05", endStr)
 	for _, d := range inRange {
-		if d.InterviewTime.Time().Before(at.Add(-time.Hour)) || d.InterviewTime.Time().After(at) {
-			return fmt.Errorf("范围外行被返回: %v", d.InterviewTime)
+		if d.InterviewTime.Time().Before(startWall) || d.InterviewTime.Time().After(endWall) {
+			return fmt.Errorf("范围外行被返回: %s", d.InterviewTime.Time().Format("2006-01-02T15:04:05"))
 		}
 	}
 	sc.sm.logf("全量=%d 行含标记行；状态过滤 %d 行全 PENDING；时间范围闭区间命中 %d 行", len(all), len(pending), len(inRange))

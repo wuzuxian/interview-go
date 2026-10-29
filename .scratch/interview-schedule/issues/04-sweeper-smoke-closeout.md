@@ -29,3 +29,11 @@
 5. smoke 解析样例只覆盖飞书/腾讯（规则可解）；纯 Zoom 文本因 Zoom 规则不提取公司岗位必走 AI 兜底，不打真 LLM 的冒烟不覆盖（AI 兜底已由单测覆盖，票 03）。
 6. 文档收口：面试助手-架构依赖.md 登记（第 3 层 interview-schedule 行、smoke 行补 schedule 模式、§2 代码范围 15 文件、§3 依赖边与 PG 表清单补 interview_schedule）；config.yaml 补 app.interview_schedule 段；spec 偏离清单 9 条收口（预案内 2 条 + 实现期 7 条，均为不可达路径或既有评审口径）。
 
+### 真链路验收与评审修复留痕（2026-10-29）
+
+**smoke（-mode schedule）真链路 11/11 通过**：本机共库环境（PG 16/pgvector 容器，interview_schedule 表在位）起 8090 临时实例（`APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s`），规则解析三平台样例（含 Zoom 探测→兜底链路）→ 创建强制 PENDING → 详情（无时区格式）→ 列表过滤（状态/范围闭区间）→ 更新不动 status → PATCH/PUT 任意跳转 → **过期取消 3.007s 内置 CANCELLED**（真库 + 真后台 goroutine）→ 清理，库中无残留行。维护者 8080 旧实例全程未动。
+
+踩坑记录（smoke 首跑抓到并修复）：列表范围步曾把响应中按 UTC 解析的 naive 时间与本地时间构造的窗口做绝对时刻比较（差 8 小时误判范围外）——墙钟比较必须两边同用 `time.Parse` 解析的 UTC 承载值；服务端存储经 DB 直查确认无时区漂移（interview_time 原样墙钟、created_at 本地墙钟，与 Java LocalDateTime 行为一致）。
+
+code-review 两轴修复（提交 f9eb147）：parse 产物 roundNumber 对齐 Java 字段默认 1、interviewTime 对齐 @JsonFormat 可选秒（新增 FlexTime）、偏离清单补第 10 条（AI 空串必需字段）、slog 键名统一英文、GLOSSARY 禁用词清理、回退 voice 冒烟文件顺手格式化。
+
