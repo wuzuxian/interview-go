@@ -157,6 +157,11 @@ app:
     # 会话缓存 TTL（Java Redisson bucket TTL 1h）
     session_cache_ttl: 1h
 
+  # 面试日程（票 01-04；Java 侧无 yml 键，巡检节奏为 ScheduleStatusUpdater
+  # @Scheduled 每小时 cron，Go 收敛为可配间隔；smoke 过期取消步用短间隔）
+  interview_schedule:
+    sweeper_interval: 1h
+
   # 知识库（票 01：上传 → 切分 → 向量入库 → 恢复；阈值与 Java application.yml 一致）
   knowledgebase:
     max_file_size: 52428800     # 50MB（Java MAX_FILE_SIZE）

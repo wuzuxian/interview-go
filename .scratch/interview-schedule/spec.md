@@ -99,6 +99,23 @@ Java 版 interview-guide 的面试日程模块（interviewschedule）在 Go 版�
 - **验收**：每票 TDD 自验；全部完成后 code-review；最终以 smoke schedule 模式真链路通过收口。
 - **JPQL 细节**：批量 UPDATE 不触发 @PreUpdate（updated_at 不变）——实现票按对齐细节处理，非偏离。
 
-## 与 Java 行为的有意偏离（收口清单）
+## 与 Java 行为的有意偏离（收口清单，2026-10-29）
 
-四票完成后按票 Comments 归并收口。预案内：AI 兜底 provider 选择修正（Q1 裁决，见阶段三）。
+四票完成后按票 Comments 归并收口。前 2 条为预案内偏离。
+
+**预案内**
+
+1. AI 兜底 provider 选择修正（访谈裁决 Q1）：Java 把 `source` 直接当 LLM providerId 传注册表（parse 调用点 L116/L306），source=feishu/tencent/zoom 时按 id 直查 Provider 几乎必然不存在、异常被吞、AI 兜底失效——缺陷而非特性；Go 一律走默认 Chat Provider（bridge.RagChatModelFor，等价 Java getChatClientOrDefault 默认分支），`source` 仅参与规则解析的格式选择。（票 03）
+2. 过期巡检节奏（访谈裁决 Q3-A）：Java `@Scheduled(cron = "0 0 * * * ?")` 每小时整点；Go 间隔节拍（Config `sweeper_interval` 默认 1h，首轮在一个间隔之后、不立即执行，对齐 cron 不立即触发的语义）。行为等价性以 smoke `-mode schedule` 过期取消步验收（服务以 `APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s` 短间隔启动）。（票 04）
+
+**实现期新增（均不可达路径 / 评审统一口径）**
+
+3. 列表 status 非法值：Java `InterviewStatus.valueOf` 抛 IllegalArgumentException、GlobalExceptionHandler 有专 handler → code=400 + 枚举英文内部消息；Go 400「无效的面试状态: 原值」。（票 01；kb 偏离 22 同口径，前端恒发合法值）
+4. updateStatus 的 status 参数缺失/非法值：Java 缺参（MissingServletRequestParameterException）与非法值（MethodArgumentTypeMismatchException）均无专门 handler，落全局兜底 500「系统繁忙」；Go 400「缺少必填参数: status」/「无效的面试状态: 原值」快速失败。（票 01；kb 偏离 29 评审口径）
+5. 列表 start/end 时间参数非法：Java 类型转换失败落兜底 500；Go 400「无效的时间参数: 原值」。（票 01）
+6. roundNumber 请求显式 null：Java Jackson setter 覆盖字段默认 1 → null 入库；Go nil → 1（显式 null 与缺失同路径，前端从不传 null）。（票 01）
+7. createdAt/updatedAt 序列化：Java Jackson 对 LocalDateTime 微秒非零时输出带 .ffffff 小数节；Go 恒输出秒级无小数节（前端按字符串透传展示、不解析这两字段——kb 偏离 12 同口径）。（票 01）
+8. 非法请求体 JSON / 时间字段格式非法：Java 走全局兜底 500「系统繁忙」；Go 400「请求参数错误」。（票 01；kb 偏离 11 既有口径）
+9. Java 遗留死方法 `findByStatusAndInterviewTimeBefore` 不复刻（全仓库无调用）。（票 04）
+
+共 9 条。验收留痕：真链路 smoke（-mode schedule）由维护者在真实环境执行收口（过期取消步需短巡检间隔启动服务）。

@@ -81,3 +81,14 @@ func (r *Repo) FindByInterviewTimeBetween(ctx context.Context, start, end time.T
 func (r *Repo) DeleteByID(ctx context.Context, id int64) error {
 	return r.db.WithContext(ctx).Delete(&InterviewScheduleEntity{}, "id = ?", id).Error
 }
+
+// CancelExpiredPending 过期取消（Java updateStatusByStatusAndInterviewTimeBefore
+// 的 JPQL 批量 UPDATE 逐字）：status=PENDING 且 interview_time < cutoff →
+// CANCELLED，返回影响行数。UpdateColumns 绕过 GORM hooks 与 updated_at 自动
+// 更新——对齐 JPQL 批量 UPDATE 不触发 @PreUpdate、updated_at 保持原值的语义。
+func (r *Repo) CancelExpiredPending(ctx context.Context, cutoff time.Time) (int64, error) {
+	res := r.db.WithContext(ctx).Model(&InterviewScheduleEntity{}).
+		Where("status = ? AND interview_time < ?", StatusPending, cutoff).
+		UpdateColumn("status", StatusCancelled)
+	return res.RowsAffected, res.Error
+}

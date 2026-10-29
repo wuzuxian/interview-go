@@ -52,7 +52,7 @@ var (
 
 // wsDownMessage 下行消息的客户端扁平视图：六类消息（control/subtitle/text/
 // audio/audio_chunk/error）字段名逐字对齐 internal/voiceinterview/ws_messages.go
-//（即 Java VoiceInterviewWebSocketHandler 的 Map.of/Lombok 序列化）。control.message
+// （即 Java VoiceInterviewWebSocketHandler 的 Map.of/Lombok 序列化）。control.message
 // 与 error.message 同名，共用一个字段。
 type wsDownMessage struct {
 	Type    string `json:"type"`
@@ -84,7 +84,7 @@ type wsUpControl struct {
 }
 
 // voiceSessionDTO GET/POST /api/voice-interview/sessions 响应中冒烟关心的字段
-//（Java dto/SessionResponseDTO 子集；webSocketUrl 为相对路径）。
+// （Java dto/SessionResponseDTO 子集；webSocketUrl 为相对路径）。
 type voiceSessionDTO struct {
 	SessionID    int64  `json:"sessionId"`
 	RoleType     string `json:"roleType"`

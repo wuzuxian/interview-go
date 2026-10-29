@@ -12,14 +12,14 @@ import (
 )
 
 // voiceConfigView GET /api/llm-provider/voice/asr|tts 响应中冒烟关心的字段
-//（服务端对 Key 做掩码：MaskAPIKey 长度 ≤6 的 Key 返回 "***"）。
+// （服务端对 Key 做掩码：MaskAPIKey 长度 ≤6 的 Key 返回 "***"）。
 type voiceConfigView struct {
 	MaskedAPIKey string `json:"maskedApiKey"`
 }
 
 // validateVoiceConfigReady voice 模式前置检查（票面：voice_config 未配置真实
 // ASR/TTS Key 时给出清晰错误）：读取失败（未初始化/解密失败）或掩码为 "***"
-//（Key 缺失或过短）都判定为不可运行，并指引到设置页配置。
+// （Key 缺失或过短）都判定为不可运行，并指引到设置页配置。
 func validateVoiceConfigReady(asr *voiceConfigView, asrErr error, tts *voiceConfigView, ttsErr error) error {
 	if asrErr != nil {
 		return fmt.Errorf("ASR 配置不可用（%v）；请先在设置页（GET /api/llm-provider/voice/asr 可核对）配置语音识别参数与真实 DashScope API Key", asrErr)

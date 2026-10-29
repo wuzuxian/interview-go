@@ -406,6 +406,12 @@ func main() {
 		},
 		interview.NewPromptSanitizer(slogger), slogger)
 	scheduleCtl := interviewschedule.NewController(scheduleSvc, scheduleParseSvc)
+	// 票 04：过期待面试巡检（Java ScheduleStatusUpdater 每小时 cron → 间隔节拍，
+	// 默认 1h；首轮在一个间隔之后，对齐 cron 不立即触发；UpdateColumn 绕过
+	// updated_at 自动更新，对齐 JPQL 批量 UPDATE 语义）。
+	scheduleUpdater := interviewschedule.NewStatusUpdater(scheduleRepo, appCfg.InterviewSchedule, slogger)
+	scheduleUpdater.Start(ctx)
+	defer scheduleUpdater.Stop()
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(

@@ -26,28 +26,28 @@ func TestValidateVoiceConfigReady(t *testing.T) {
 			asr:  ok, tts: ok,
 		},
 		{
-			name:    "ASR 配置未初始化时给出清晰指引",
-			asr:     nil, asrErr: fmt.Errorf("语音服务配置未初始化"), tts: ok,
+			name: "ASR 配置未初始化时给出清晰指引",
+			asr:  nil, asrErr: fmt.Errorf("语音服务配置未初始化"), tts: ok,
 			wantMsg: "ASR",
 		},
 		{
-			name:    "TTS 配置未初始化时给出清晰指引",
-			asr:     ok, tts: nil, ttsErr: fmt.Errorf("语音服务配置未初始化"),
+			name: "TTS 配置未初始化时给出清晰指引",
+			asr:  ok, tts: nil, ttsErr: fmt.Errorf("语音服务配置未初始化"),
 			wantMsg: "TTS",
 		},
 		{
-			name:    "ASR Key 缺失（掩码 ***）时报错",
-			asr:     missing, tts: ok,
+			name: "ASR Key 缺失（掩码 ***）时报错",
+			asr:  missing, tts: ok,
 			wantMsg: "ASR",
 		},
 		{
-			name:    "TTS Key 缺失（掩码 ***）时报错",
-			asr:     ok, tts: missing,
+			name: "TTS Key 缺失（掩码 ***）时报错",
+			asr:  ok, tts: missing,
 			wantMsg: "TTS",
 		},
 		{
-			name:    "ASR 问题优先于 TTS 问题上报",
-			asr:     missing, tts: missing,
+			name: "ASR 问题优先于 TTS 问题上报",
+			asr:  missing, tts: missing,
 			wantMsg: "ASR",
 		},
 	}
@@ -105,8 +105,8 @@ func TestValidateVoiceReport(t *testing.T) {
 			raw:  func() []byte { return sampleVoiceReport(9) },
 		},
 		{
-			name: "非法 JSON 报错",
-			raw:  func() []byte { return []byte("not-json") },
+			name:    "非法 JSON 报错",
+			raw:     func() []byte { return []byte("not-json") },
 			wantMsg: "JSON",
 		},
 		{
@@ -123,8 +123,8 @@ func TestValidateVoiceReport(t *testing.T) {
 			wantMsg: "strengths",
 		},
 		{
-			name: "sessionId 与场次不符报错",
-			raw:  func() []byte { return sampleVoiceReport(8) },
+			name:    "sessionId 与场次不符报错",
+			raw:     func() []byte { return sampleVoiceReport(8) },
 			wantMsg: "sessionId",
 		},
 		{
