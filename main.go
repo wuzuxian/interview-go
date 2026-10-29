@@ -18,6 +18,7 @@ import (
 	"github.com/wuzuxian/interview/internal/aibridge"
 	"github.com/wuzuxian/interview/internal/httpx"
 	"github.com/wuzuxian/interview/internal/interview"
+	"github.com/wuzuxian/interview/internal/interviewschedule"
 	"github.com/wuzuxian/interview/internal/knowledgebase"
 	"github.com/wuzuxian/interview/internal/knowledgebase/textsplit"
 	"github.com/wuzuxian/interview/internal/llmprovider"
@@ -57,6 +58,9 @@ type AppConfig struct {
 	VoiceInterview voiceinterview.Config `config:"voice_interview"`
 	// KnowledgeBase 知识库配置段（app.knowledgebase），结构定义在 knowledgebase 包内。
 	KnowledgeBase knowledgebase.Config `config:"knowledgebase"`
+	// InterviewSchedule 面试日程配置段（app.interview_schedule），结构定义在
+	// interviewschedule 包内。
+	InterviewSchedule interviewschedule.Config `config:"interview_schedule"`
 	Storage       struct {
 		Endpoint         string `config:"endpoint" default:"http://localhost:9000"`
 		AccessKey        string `config:"access_key"`
@@ -389,6 +393,13 @@ func main() {
 	kbInterviewSvc := knowledgebase.NewInterviewService(kbRepo, sessionSvc, slogger)
 	kbInterviewCtl := knowledgebase.NewInterviewController(kbInterviewSvc)
 
+	// 面试日程模块（票 01）：自包含 CRUD（Java interviewschedule 模块，与简历/
+	// 面试/语音/知识库零数据关联）；POST /parse 邀约解析随票 02 接入，AI 兜底
+	// 票 03，过期巡检 sweeper 票 04。
+	scheduleRepo := interviewschedule.NewRepo(db.DB)
+	scheduleSvc := interviewschedule.NewService(scheduleRepo, slogger)
+	scheduleCtl := interviewschedule.NewController(scheduleSvc)
+
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
 		ginserver.WithConfig(cfg),
@@ -413,6 +424,7 @@ func main() {
 	kbChatCtl.RegisterRoutes(api)
 	kbQuestionCtl.RegisterRoutes(api)
 	kbInterviewCtl.RegisterRoutes(api)
+	scheduleCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

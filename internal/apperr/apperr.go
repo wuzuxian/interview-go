@@ -109,6 +109,9 @@ const (
 	CodeVoiceReadFailed         = 11009
 	CodeVoiceWriteFailed        = 11010
 	CodeVoiceConfigTestFailed   = 11011
+	// 面试日程模块 9xxx（对齐 Java ErrorCode：INTERVIEW_SCHEDULE_NOT_FOUND(9001)，
+	// 9xxx 段仅此一号）。
+	CodeScheduleNotFound = 9001
 )
 
 // 预置常用错误。
