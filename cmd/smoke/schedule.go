@@ -1,7 +1,7 @@
-// 面试日程冒烟模式（票 04，-mode schedule）：真库 CRUD 全链路 + 规则解析样例 +
-// 过期取消验证。不打真实 LLM——解析只覆盖规则可解的飞书/腾讯样例（Zoom 规则
-// 不提取公司岗位，纯 Zoom 文本必走 AI 兜底，不在不打 LLM 的冒烟范围；AI 兜底
-// 已由单测覆盖）。过期取消步需服务以短巡检间隔启动（见 -sweeper-wait）。
+// 面试日程冒烟模式（票 04，-mode schedule）：真库 CRUD 全链路 + 规则解析三平台
+// 样例 + 过期取消验证。不打真实 LLM——飞书/腾讯样例规则直解，Zoom 样例走特征
+// 探测→飞书解析器兜底链路（Zoom 规则不提取公司岗位，纯 Zoom 文本必走 AI 兜底，
+// AI 兜底已由单测覆盖）。过期取消步需服务以短巡检间隔启动（见 -sweeper-wait）。
 package main
 
 import (
@@ -31,6 +31,15 @@ const (
 时间：2026/04/15 10:00
 会议号：123456789
 密码：1234`
+
+	// smokeZoomSample Zoom 样例：Zoom 规则只提取链接与时间（Java 现状，不提取
+	// 公司/岗位），特征探测命中 Zoom 但产物无效 → 逐个兜底由飞书解析器以
+	// 公司/岗位/时间标签命中（zoom 链接不被飞书链接正则捕获）——锁定该兜底链路。
+	smokeZoomSample = `Zoom 会议邀请
+公司：腾讯
+岗位：测试开发工程师
+时间：2026-04-20 09:30
+链接：https://zoom.us/j/9876543210`
 )
 
 // scheduleSmoke 日程冒烟状态。
@@ -61,6 +70,7 @@ func runSchedule(opts *options, out io.Writer) error {
 		{"健康检查", sm.stepHealth},
 		{"规则解析·飞书样例", sc.stepParseFeishu},
 		{"规则解析·腾讯会议样例", sc.stepParseTencent},
+		{"规则解析·Zoom 样例（探测+兜底）", sc.stepParseZoom},
 		{"创建日程（强制 PENDING）", sc.stepCreate},
 		{"详情校验", sc.stepGetByID},
 		{"列表过滤（状态/时间范围）", sc.stepListFilters},
@@ -122,6 +132,28 @@ func (sc *scheduleSmoke) stepParseTencent(ctx context.Context) error {
 		return fmt.Errorf("meetingLink = %v, want %q（group() 全匹配逐字）", d.MeetingLink, wantLink)
 	}
 	sc.sm.logf("腾讯样例：公司/时间/会议号+密码 全命中；meetingLink 全匹配现状确认")
+	return nil
+}
+
+// stepParseZoom Zoom 样例：断言特征探测→兜底链路（飞书解析器命中三要素，
+// zoom 链接不被捕获——Java 现状）。
+func (sc *scheduleSmoke) stepParseZoom(ctx context.Context) error {
+	out, err := sc.parseCall(ctx, smokeZoomSample, "")
+	if err != nil {
+		return err
+	}
+	if !out.Success || out.ParseMethod != "rule" || out.Confidence != 0.95 {
+		return fmt.Errorf("解析形态异常: %+v", out)
+	}
+	d := out.Data
+	if d == nil || d.CompanyName != "腾讯" || d.Position != "测试开发工程师" ||
+		d.InterviewTime.Time().Format("2006-01-02T15:04") != "2026-04-20T09:30" {
+		return fmt.Errorf("Zoom 兜底产物异常: %+v", d)
+	}
+	if d.MeetingLink != nil {
+		return fmt.Errorf("zoom 链接不应被飞书链接正则捕获（Java 现状）: %v", *d.MeetingLink)
+	}
+	sc.sm.logf("Zoom 样例：特征探测→飞书解析器兜底命中公司/岗位/时间（链接不捕获，Java 现状）")
 	return nil
 }
 
@@ -252,7 +284,7 @@ func (sc *scheduleSmoke) stepUpdate(ctx context.Context) error {
 	return nil
 }
 
-// stepUpdateStatus 状态流转：PATCH→COMPLETED、PUT 任意跳回 PENDING（无状态机校验）。
+// stepUpdateStatus 状态流转：PATCH→COMPLETED、PUT 任意跳回 PENDING（无流转校验）。
 func (sc *scheduleSmoke) stepUpdateStatus(ctx context.Context) error {
 	id := sc.ids[len(sc.ids)-1]
 	var out interviewschedule.InterviewScheduleDTO
@@ -285,7 +317,7 @@ func (sc *scheduleSmoke) stepExpiryCancel(ctx context.Context) error {
 	past := time.Now().Add(-2 * time.Hour).Format("2006-01-02T15:04:05")
 	out, err := sc.createCall(ctx, map[string]any{
 		"companyName":   sc.marker + "过期行",
-		"position":      "已超时岗位",
+		"position":      "已过期岗位",
 		"interviewTime": past,
 	})
 	if err != nil {

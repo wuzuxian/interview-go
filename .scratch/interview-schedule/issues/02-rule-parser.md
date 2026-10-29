@@ -30,3 +30,8 @@
 6. 服务层「输入文本为空」分支经 HTTP 不可达（控制器 @NotBlank 先拦 400「文本不能为空」），按 Java 原样保留。
 7. 腾讯规则无轮次提取；三套规则 interviewType 一律 VIDEO。
 
+### code-review 修复增补（2026-10-29）
+
+8. parse 产物 roundNumber：Java `CreateInterviewRequest` 字段默认 1（model L24），三套规则未命中轮次时响应仍为 1（恒非 null）——原实现保持 nil 输出 null，已对齐为初始化 1。（评审发现，非偏离：属对齐修复）
+9. parse 产物 interviewTime 序列化：Java 请求体上的 @JsonFormat pattern="yyyy-MM-dd'T'HH:mm[:ss]" 对响应同样生效（可选秒，秒为 0 省略 :ss）——原实现恒带秒，已新增 FlexTime 类型对齐（仅解析响应/请求体路径；InterviewScheduleDTO 恒带秒不变）。（评审发现，非偏离：属对齐修复）
+

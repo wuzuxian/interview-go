@@ -65,9 +65,9 @@ func Test腾讯样例解析(t *testing.T) {
 	if r.MeetingLink == nil || *r.MeetingLink != want {
 		t.Fatalf("meetingLink = %v, want %q（group() 全匹配逐字）", r.MeetingLink, want)
 	}
-	// 腾讯规则无轮次提取
-	if r.RoundNumber != nil {
-		t.Fatalf("轮次 = %v, want nil", r.RoundNumber)
+	// 腾讯规则无轮次提取：回落 Java 字段默认值 1（解析产物恒非 null）
+	if r.RoundNumber == nil || *r.RoundNumber != 1 {
+		t.Fatalf("轮次 = %v, want 1（Java 字段默认）", r.RoundNumber)
 	}
 }
 
@@ -189,8 +189,13 @@ func TestParse接口规则路径契约(t *testing.T) {
 		t.Fatalf("响应形态 = %v", data)
 	}
 	got := data["data"].(map[string]any)
-	if got["companyName"] != "阿里巴巴" || got["interviewTime"] != "2026-04-10T14:30:00" {
+	// 解析响应 data 为 CreateInterviewRequest：interviewTime 走可选秒格式
+	//（@JsonFormat [:ss]，秒为 0 省略）；roundNumber 恒非 null（字段默认 1）
+	if got["companyName"] != "阿里巴巴" || got["interviewTime"] != "2026-04-10T14:30" {
 		t.Fatalf("解析产物 = %v", got)
+	}
+	if got["roundNumber"] != float64(2) {
+		t.Fatalf("roundNumber = %v, want 2", got["roundNumber"])
 	}
 	if got["interviewType"] != "VIDEO" {
 		t.Fatalf("interviewType = %v", got["interviewType"])

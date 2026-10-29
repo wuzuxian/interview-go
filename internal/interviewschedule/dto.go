@@ -48,17 +48,49 @@ func (t NaiveTime) IsZero() bool { return time.Time(t).IsZero() }
 // Time 转标准库时间。
 func (t NaiveTime) Time() time.Time { return time.Time(t) }
 
+// FlexTime 可选秒时间（对齐 Java CreateInterviewRequest.interviewTime 的
+// @JsonFormat pattern="yyyy-MM-dd'T'HH:mm[:ss]"）：序列化秒为 0 时省略 :ss，
+// 否则带秒；反序列化与 NaiveTime 相同。仅用于解析响应/请求体中的
+// CreateInterviewRequest（InterviewScheduleDTO 用 NaiveTime 恒带秒）。
+type FlexTime time.Time
+
+// MarshalJSON 秒为 0 时省略 :ss（[:ss] 可选节语义）。
+func (t FlexTime) MarshalJSON() ([]byte, error) {
+	v := time.Time(t)
+	if v.Second() == 0 {
+		return []byte(`"` + v.Format(naiveTimeFormatMin) + `"`), nil
+	}
+	return []byte(`"` + v.Format(naiveTimeFormatSec) + `"`), nil
+}
+
+// UnmarshalJSON 同 NaiveTime（16/19 位两种格式）。
+func (t *FlexTime) UnmarshalJSON(b []byte) error {
+	var n NaiveTime
+	if err := n.UnmarshalJSON(b); err != nil {
+		return err
+	}
+	*t = FlexTime(n.Time())
+	return nil
+}
+
+// IsZero 是否零值。
+func (t FlexTime) IsZero() bool { return time.Time(t).IsZero() }
+
+// Time 转标准库时间。
+func (t FlexTime) Time() time.Time { return time.Time(t) }
+
 // CreateInterviewRequest 创建/更新请求（Java CreateInterviewRequest，8 业务字段；
 // 更新走同一请求体，status 不可经此修改）。字段校验消息逐字对齐 Java @NotBlank/@NotNull。
+// 同时作为解析响应 data（Java parse 返回 CreateInterviewRequest）。
 type CreateInterviewRequest struct {
-	CompanyName   string    `json:"companyName"`
-	Position      string    `json:"position"`
-	InterviewTime NaiveTime `json:"interviewTime"`
-	InterviewType *string   `json:"interviewType"` // ONSITE/VIDEO/PHONE，纯字符串透传不校验取值
-	MeetingLink   *string   `json:"meetingLink"`
-	RoundNumber   *int      `json:"roundNumber"` // 缺省 1（Java 字段默认值）
-	Interviewer   *string   `json:"interviewer"`
-	Notes         *string   `json:"notes"`
+	CompanyName   string   `json:"companyName"`
+	Position      string   `json:"position"`
+	InterviewTime FlexTime `json:"interviewTime"`
+	InterviewType *string  `json:"interviewType"` // ONSITE/VIDEO/PHONE，纯字符串透传不校验取值
+	MeetingLink   *string  `json:"meetingLink"`
+	RoundNumber   *int     `json:"roundNumber"` // Java 字段默认 1（解析产物恒非 null）
+	Interviewer   *string  `json:"interviewer"`
+	Notes         *string  `json:"notes"`
 }
 
 // InterviewScheduleDTO 日程读写体（Java InterviewScheduleDTO，12 字段逐字）。

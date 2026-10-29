@@ -117,5 +117,6 @@ Java 版 interview-guide 的面试日程模块（interviewschedule）在 Go 版�
 7. createdAt/updatedAt 序列化：Java Jackson 对 LocalDateTime 微秒非零时输出带 .ffffff 小数节；Go 恒输出秒级无小数节（前端按字符串透传展示、不解析这两字段——kb 偏离 12 同口径）。（票 01）
 8. 非法请求体 JSON / 时间字段格式非法：Java 走全局兜底 500「系统繁忙」；Go 400「请求参数错误」。（票 01；kb 偏离 11 既有口径）
 9. Java 遗留死方法 `findByStatusAndInterviewTimeBefore` 不复刻（全仓库无调用）。（票 04）
+10. AI 把必需字段返回为空串时：Java `isValidResult` 仅判非 null → 仍成功 0.8 并产出空公司名；Go 按空串无效落「解析失败」（Go string 无 null 语义，不值得为该边角引入存在性追踪；规则路径正则要求非空，不受影响）。（票 03，code-review 发现）
 
-共 9 条。验收留痕：真链路 smoke（-mode schedule）由维护者在真实环境执行收口（过期取消步需短巡检间隔启动服务）。
+共 10 条。code-review 修复（2026-10-29）：parse 响应 roundNumber 对齐 Java 字段默认 1（原实现未命中轮次时输出 null）；parse 响应 interviewTime 对齐 @JsonFormat 可选秒（秒为 0 省略 :ss，新增 FlexTime）；smoke 补 Zoom 样例（特征探测→兜底链路）凑齐三平台；slog 键名统一英文、「状态机」等 GLOSSARY 禁用词清理；回退 voice 冒烟文件的顺手格式化。验收留痕：真链路 smoke（-mode schedule）由维护者在真实环境执行收口（过期取消步需短巡检间隔启动服务）。

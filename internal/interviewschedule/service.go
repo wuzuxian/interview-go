@@ -122,7 +122,7 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	return s.store.DeleteByID(ctx, id)
 }
 
-// UpdateStatus 更新状态：任意状态可跳任意状态，无状态机校验（Java 现状）；
+// UpdateStatus 更新状态：任意状态可跳任意状态，无流转校验（Java 现状）；
 // 不存在 → 9001。
 func (s *Service) UpdateStatus(ctx context.Context, id int64, status InterviewStatus) (*InterviewScheduleDTO, error) {
 	entity, err := s.getByIDOrThrow(ctx, id)

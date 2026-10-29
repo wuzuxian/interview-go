@@ -156,14 +156,14 @@ func parseFlags() *options {
   可用 -keep 跳过；参数 -kb-main/-kb-follow）。
 
 -mode schedule 面试日程链路（票 04，不打真实 LLM）：
-  健康检查 → 规则解析样例（飞书/腾讯会议，置信度与 group() 全匹配现状断言；
-  Zoom 规则不提取公司岗位、纯 Zoom 文本必走 AI 兜底，不在不打 LLM 的
-  冒烟范围）→ 创建（传入 status 被忽略、roundNumber 缺省 1）→ 详情
-  （12 字段、时间无时区格式）→ 列表过滤（状态/时间范围闭区间）→ 更新
-  （业务字段拷贝、status 不变）→ 状态流转（PATCH→COMPLETED、PUT 任意
-  跳回）→ 过期取消（插过期 PENDING 行轮询至 CANCELLED；服务需以
-  APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s 短间隔启动，否则
-  -sweeper-wait 内超时判失败；0 跳过）→ DELETE 清理。
+  健康检查 → 规则解析三平台样例（飞书/腾讯直解：置信度 0.95 与 group() 全
+  匹配现状断言；Zoom 样例走特征探测→飞书解析器兜底链路；纯 Zoom 文本无
+  标签时必走 AI 兜底，AI 路径已由单测覆盖）→ 创建（传入 status 被忽略、
+  roundNumber 缺省 1）→ 详情（12 字段、时间无时区格式）→ 列表过滤
+  （状态/时间范围闭区间）→ 更新（业务字段拷贝、status 不变）→ 状态流转
+  （PATCH→COMPLETED、PUT 任意跳回）→ 过期取消（插过期 PENDING 行轮询至
+  CANCELLED；服务需以 APP_APP_INTERVIEW_SCHEDULE_SWEEPER_INTERVAL=2s
+  短间隔启动，否则 -sweeper-wait 内超时判失败；0 跳过）→ DELETE 清理。
 
 每步打印校验点与耗时；任一步失败以非零退出码结束，错误信息含步骤名与响应摘要。
 

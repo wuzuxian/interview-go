@@ -84,6 +84,6 @@ func (u *StatusUpdater) sweepOnce(ctx context.Context) {
 		return
 	}
 	if updated > 0 {
-		u.logger.Info("已将过期面试标记为已取消", slog.Int64("条数", updated))
+		u.logger.Info("已将过期面试标记为已取消", slog.Int64("count", updated))
 	}
 }

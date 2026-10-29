@@ -33,10 +33,10 @@ func NewParseService(models ChatModelFactory, sanitizer *interview.PromptSanitiz
 // 此处的「输入文本为空」分支保留服务层语义（对齐 Java L102-105）。
 func (s *ParseService) Parse(ctx context.Context, rawText, source string) *ParseResponse {
 	s.logger.Info("开始解析文本",
-		slog.String("来源", source), slog.Int("文本长度", len(rawText)))
+		slog.String("source", source), slog.Int("textLength", len(rawText)))
 
 	if strings.TrimSpace(rawText) == "" {
-		s.logger.Warn("Input text is null or empty")
+		s.logger.Warn("输入文本为空或空白")
 		return &ParseResponse{
 			Success: false, Data: nil, Confidence: 0.0, ParseMethod: "none", Log: "输入文本为空",
 		}
@@ -53,7 +53,7 @@ func (s *ParseService) Parse(ctx context.Context, rawText, source string) *Parse
 
 	// Step 2: 规则解析失败，AI 兜底。
 	s.logger.Info("规则解析失败，尝试 AI 解析")
-	result = s.parseWithAI(ctx, rawText, source) // Java 现状把 source 当 provider 参数传；Go 侧裁决见 ai_parser.go
+	result = s.parseWithAI(ctx, rawText) // Java 现状把 source 当 provider 参数传；Go 侧裁决见 ai_parser.go
 	if isValidResult(result) {
 		s.logger.Info("AI 解析成功")
 		return &ParseResponse{

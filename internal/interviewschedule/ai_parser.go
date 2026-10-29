@@ -66,9 +66,12 @@ var markdownJSONPattern = regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)\\s*``
 
 // parseWithAI AI 兜底解析：异常全吞（模型构建/调用失败、空返回、非 JSON 均返回
 // nil，走「解析失败」形态，Java L388-391 catch 语义）。
-func (s *ParseService) parseWithAI(ctx context.Context, rawText, _ string) *CreateInterviewRequest {
-	// 【偏离清单第 1 条，访谈裁决 Q1】Java 此处把 source 当 providerId 传注册表，
-	// Go 一律走默认 Provider（文件头注释详述）；source 参数保留签名对位、不使用。
+// 【偏离清单第 10 条】AI 把必需字段返回为空串时：Java isValidResult 仅判非 null
+// → 仍成功 0.8 并产出空公司名；Go 按空串无效落「解析失败」（Go string 无 null
+// 语义，不值得为不可达边角引入存在性追踪；规则路径的正则要求非空，不受影响）。
+func (s *ParseService) parseWithAI(ctx context.Context, rawText string) *CreateInterviewRequest {
+	// 【偏离清单第 1 条，访谈裁决 Q1】Java 此处把 source 当 providerId 传注册表
+	// （parse 调用点 L116/L306），Go 一律走默认 Provider（文件头注释详述）。
 	if s.models == nil {
 		s.logger.Error("AI 解析不可用：未注入对话模型")
 		return nil
@@ -117,7 +120,7 @@ func (s *ParseService) parseWithAI(ctx context.Context, rawText, _ string) *Crea
 		return nil
 	}
 
-	request := &CreateInterviewRequest{}
+	request := &CreateInterviewRequest{RoundNumber: intPtr(1)} // Java 字段默认 1
 	if v := mapString(parsed, "companyName"); v != nil {
 		request.CompanyName = strings.TrimSpace(*v)
 	}
@@ -141,7 +144,7 @@ func (s *ParseService) parseWithAI(ctx context.Context, rawText, _ string) *Crea
 		if err != nil {
 			s.logger.Error("AI 返回的时间格式不正确", slog.String("interviewTime", timeStr))
 		} else {
-			request.InterviewTime = NaiveTime(t)
+			request.InterviewTime = FlexTime(t)
 		}
 	}
 	if v := mapString(parsed, "interviewType"); v != nil {
@@ -151,11 +154,9 @@ func (s *ParseService) parseWithAI(ctx context.Context, rawText, _ string) *Crea
 		request.MeetingLink = strPtr(strings.TrimSpace(*v))
 	}
 	if raw, ok := parsed["roundNumber"]; ok && raw != nil {
-		// Java：toString 后 Integer.parseInt，失败回落 1（L368-375）。
+		// Java：toString 后 Integer.parseInt，失败回落默认 1（L368-375）。
 		if n, err := strconv.Atoi(fmt.Sprintf("%v", raw)); err == nil {
-			request.RoundNumber = intPtr(n)
-		} else {
-			request.RoundNumber = intPtr(1)
+			*request.RoundNumber = n
 		}
 	}
 	if v := mapString(parsed, "interviewer"); v != nil {

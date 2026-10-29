@@ -8,7 +8,7 @@ package interviewschedule
 import "time"
 
 // InterviewStatus 日程状态（Java InterviewStatus 枚举，四值；无 CONFIRMED，
-// 状态间可任意跳转、无状态机校验；RESCHEDULED 仅为保留取值，无接口自动置入）。
+// 状态间可任意跳转、无流转校验；RESCHEDULED 仅为保留取值，无接口自动置入）。
 type InterviewStatus string
 
 const (

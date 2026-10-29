@@ -95,12 +95,13 @@ func isValidResult(result *CreateInterviewRequest) bool {
 		!result.InterviewTime.IsZero()
 }
 
-// parseFeishu 飞书格式（Java parseFeishu L165-210）。
+// parseFeishu 飞书格式（Java parseFeishu L165-210）。RoundNumber 初始化为 1
+// （Java CreateInterviewRequest 字段默认值，解析产物恒非 null）。
 func parseFeishu(rawText string) *CreateInterviewRequest {
-	request := &CreateInterviewRequest{}
+	request := &CreateInterviewRequest{RoundNumber: intPtr(1)}
 	if m := timePatternFeishu.FindStringSubmatch(rawText); m != nil {
 		if t := parseDateTime(m[1]); t != nil {
-			request.InterviewTime = NaiveTime(*t)
+			request.InterviewTime = FlexTime(*t)
 		}
 	}
 	if link := linkPatternFeishu.FindString(rawText); link != "" {
@@ -113,7 +114,7 @@ func parseFeishu(rawText string) *CreateInterviewRequest {
 		request.Position = strings.TrimSpace(m[1])
 	}
 	if round := roundPatternFeishu.FindString(rawText); round != "" {
-		request.RoundNumber = intPtr(parseRoundNumber(round))
+		*request.RoundNumber = parseRoundNumber(round)
 	}
 	request.InterviewType = strPtr("VIDEO")
 	return request
@@ -122,10 +123,10 @@ func parseFeishu(rawText string) *CreateInterviewRequest {
 // parseTencent 腾讯会议格式（Java parseTencent L214-261）：meetingLink 由全匹配
 // 拼接（Java matcher.group() 现状，见文件头注释）。
 func parseTencent(rawText string) *CreateInterviewRequest {
-	request := &CreateInterviewRequest{}
+	request := &CreateInterviewRequest{RoundNumber: intPtr(1)}
 	if m := timePatternTencent.FindStringSubmatch(rawText); m != nil {
 		if t := parseDateTime(m[1] + " " + m[2]); t != nil {
-			request.InterviewTime = NaiveTime(*t)
+			request.InterviewTime = FlexTime(*t)
 		}
 	}
 	var meetingLink strings.Builder
@@ -153,7 +154,7 @@ func parseTencent(rawText string) *CreateInterviewRequest {
 
 // parseZoom Zoom 格式（Java parseZoom L265-294；不提取公司/岗位）。
 func parseZoom(rawText string) *CreateInterviewRequest {
-	request := &CreateInterviewRequest{}
+	request := &CreateInterviewRequest{RoundNumber: intPtr(1)}
 	if link := linkPatternZoom.FindString(rawText); link != "" {
 		request.MeetingLink = &link
 	}
@@ -161,7 +162,7 @@ func parseZoom(rawText string) *CreateInterviewRequest {
 	hour := hourPatternZoom.FindStringSubmatch(rawText)
 	if date != nil && hour != nil {
 		if t := parseDateTime(date[1] + " " + hour[1]); t != nil {
-			request.InterviewTime = NaiveTime(*t)
+			request.InterviewTime = FlexTime(*t)
 		}
 	}
 	request.InterviewType = strPtr("VIDEO")
