@@ -243,8 +243,8 @@ func (s *Store) searchKBWithFilter(ctx context.Context, query string, kbIDs []in
 	if err != nil {
 		return nil, err
 	}
-	sql, args := kbSearchSQL(kbIDs, topK, minScore)
-	return s.scanKBDocs(ctx, sql, append([]any{vectors, vectors, vectors}, args...)...)
+	sql, args := kbSearchSQL(vectors, kbIDs, topK, minScore)
+	return s.scanKBDocs(ctx, sql, args...)
 }
 
 // searchKBFallback 回退路径：放大 3 倍 topK 不带 kb 过滤检索，再按 metadata
@@ -258,8 +258,8 @@ func (s *Store) searchKBFallback(ctx context.Context, query string, kbIDs []int6
 	if err != nil {
 		return nil, err
 	}
-	sql, args := kbSearchSQL(nil, amplified, minScore)
-	docs, err := s.scanKBDocs(ctx, sql, append([]any{vectors, vectors, vectors}, args...)...)
+	sql, args := kbSearchSQL(vectors, nil, amplified, minScore)
+	docs, err := s.scanKBDocs(ctx, sql, args...)
 	if err != nil {
 		return nil, apperr.New(apperr.CodeKnowledgeBaseQueryFailed, "向量搜索失败")
 	}
@@ -289,16 +289,17 @@ func filterKBDocsLocal(docs []KBDoc, kbIDs []int64, topK int) []KBDoc {
 	return docs
 }
 
-// kbSearchSQL 组装向量检索 SQL（minScore>0 时附加阈值条件，Java 仅在 minScore>0
-// 时设置 similarityThreshold；kbIDs 为空不加 kb 过滤）。
-func kbSearchSQL(kbIDs []int64, topK int, minScore float64) (string, []any) {
+// kbSearchSQL 组装向量检索 SQL 与完整参数表（参数序与占位符文本序严格一致——
+// 向量按值传入，杜绝调用方前置参数导致的位置错位）；minScore>0 时附加阈值条件，
+// kbIDs 为空不加 kb 过滤（Java 仅在 minScore>0 时设置 similarityThreshold）。
+func kbSearchSQL(vec pgvector.Vector, kbIDs []int64, topK int, minScore float64) (string, []any) {
 	if topK < 1 {
 		topK = 1
 	}
 	var b strings.Builder
 	b.WriteString("SELECT id, content, metadata, 1 - (embedding <=> ?) AS score ")
 	b.WriteString("FROM vector_store WHERE 1=1")
-	var args []any
+	args := []any{vec}
 	if len(kbIDs) > 0 {
 		quoted := make([]string, 0, len(kbIDs))
 		for _, id := range kbIDs {
@@ -308,10 +309,10 @@ func kbSearchSQL(kbIDs []int64, topK int, minScore float64) (string, []any) {
 	}
 	if minScore > 0 {
 		b.WriteString(" AND 1 - (embedding <=> ?) >= ?")
-		args = append(args, minScore)
+		args = append(args, vec, minScore)
 	}
 	b.WriteString(" ORDER BY embedding <=> ? LIMIT ?")
-	args = append(args, topK)
+	args = append(args, vec, topK)
 	return b.String(), args
 }
 
