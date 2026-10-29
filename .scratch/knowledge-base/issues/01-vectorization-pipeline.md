@@ -7,7 +7,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 上传：≤50MB、MIME 白名单（pdf/msword/wordprocessingml/text/plain/markdown/rtf + md 扩展名兜底）、限流 GLOBAL=3/IP=3、并发闸门 4 不排队直接拒绝；成功返回含 vectorStatus=PENDING 的 DTO；重复上传返回 duplicate=true 且不投递向量化任务；落库失败补偿删除 S3 孤儿对象；任务投递失败如实返回 FAILED 并提示可重试
 - [ ] TokenTextSplitter 忠实移植：chunkSize=800、minChunkSizeChars=350、minChunkLengthToEmbed=5、maxNumChunks=10000、keepSeparator、中文句末标点集；cl100k_base 词表 go:embed；strategyVersion=token-v1 写入向量 metadata 与 vector_config 快照；黄金用例表驱动（中英混排、跨句边界、超长段、纯换行文本）

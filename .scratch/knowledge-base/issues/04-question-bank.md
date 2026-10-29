@@ -7,7 +7,7 @@
 
 **Blocked by:** 03（复用 RAG 检索层构造出题上下文）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] generate 接口：参数校验（difficulty junior/mid/senior、questionCount 1-30、followUpCount 0-5、categoryLimit 1-5、可选 llmProvider）+ 限流 GLOBAL=2/IP=2；创建 taskId（幂等）投递 Redis Stream（knowledgebase:question-gen:stream / question-gen-group，消息字段对齐 Java 常量）
 - [ ] sourceContext 构造：4 组固定查询各取 top4、按文档去重、总量 12 片段、截断 5000 字符

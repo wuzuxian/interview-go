@@ -155,4 +155,6 @@ Java 版 interview-guide 已停用，Go 版是唯一后端，但知识库产品�
 27. 追问池/题目要点解析失败静默降级空列表（Java log.warn 后降级）——沿题库模块既有 readStringList/readFollowUps 口径，行为（空池）一致，仅日志可见性差异。（票 05）
 28. 随机源 Java ThreadLocalRandom → Go math/rand/v2；洗牌算法同构（主问题 Collections.shuffle 末端 Fisher-Yates、追问前端局部 Fisher-Yates 且不改原列表），随机源注入为测试缝，生产行为等价。（票 05）
 
-共 28 条。验收留痕：真链路 smoke（-mode knowledgebase）由维护者在真实环境执行收口。
+29. 路径 ID 参数解析：非数字 / int64 溢出 / 负数 → 400 Result「无效的ID参数」（Java @PathVariable Long 类型不匹配走全局兜底 500「系统繁忙，请稍后重试」；负数在 Java parseLong 下合法、走「不存在」路径）——评审统一要求 400 快速失败。（code-review 修复）
+
+共 29 条。验收留痕：真链路 smoke（-mode knowledgebase）由维护者在真实环境执行收口。

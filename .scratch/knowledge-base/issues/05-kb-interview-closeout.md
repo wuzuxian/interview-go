@@ -7,7 +7,7 @@
 
 **Blocked by:** 02, 04（管理接口与题库就绪，面试才有完整可验收路径）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 创建场次：按分类/难度取 ACTIVE 题目并过滤追问池 ≥ followUpCount 的题，不足报错（消息含缺口明细）；主问题整体洗牌抽取、追问 Fisher-Yates 局部洗牌；题目组装携带 referenceAnswer/keyPoints/scoringRubric/sourceContext
 - [ ] interview 模块新增「从题目集合创建场次」入口：interview_sessions 落 sourceType=KNOWLEDGE_BASE + knowledge_base_id + interview_category，Redis 缓存 + DB 双写；既有 DTO/缓存/报告中占位字段接真实值

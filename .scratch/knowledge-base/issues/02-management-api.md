@@ -7,7 +7,7 @@
 
 **Blocked by:** 01（上传与向量入库先在，接口才有可验收的真实数据路径）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] list 支持 vectorStatus 过滤与 sortBy（null 或 "time" 为时间序，其余取值语义对照 Java sortEntities 实现）；详情、search、stats（totalCount/totalQuestionCount/totalAccessCount/completedCount/processingCount）、categories、category/{category}、uncategorized、set-category、download（Content-Disposition 带 UTF-8 编码文件名）的响应 DTO 字段与 Java 逐字对齐
 - [ ] 删除补偿顺序：事务内先摘 RAG 会话关联 → 删 DB 记录 → 事务外删向量（按 metadata kb_id，失败不阻断仅记日志）→ 删 S3 文件（失败留 storageKey 供人工补偿）
