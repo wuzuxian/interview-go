@@ -174,6 +174,17 @@ app:
       keep_separator: true
       punctuation_marks: [".", "?", "!", "\\n", "。", "？", "！", "；"]
       strategy_version: token-v1
+    query:                      # RAG 查询管线（票 03，Java app.ai.rag.*）
+      rewrite_enabled: true         # 问题改写开关
+      merge_original_query: false   # 双路召回融合（测评证明收益前默认关）
+      short_query_length: 4         # 短问题长度档
+      topk_short: 20                # 短档 topK
+      topk_medium: 12               # 中档 topK
+      topk_long: 8                  # 长档 topK
+      min_score_short: 0.18         # 短档阈值（Java application.yml 运行值）
+      min_score_default: 0.28       # 中/长档阈值
+      history_enabled: true         # 会话多轮历史开关
+      history_max_messages: 10      # 历史消息条数上限
 
   storage:
     endpoint: http://localhost:9000

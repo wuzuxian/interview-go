@@ -21,12 +21,13 @@ type Controller struct {
 	upload  *UploadService
 	list    *ListService
 	deleter *DeleteService
+	query   *QueryService
 	rl      *ratelimit.Limiter
 }
 
 // NewController 创建控制器。
-func NewController(upload *UploadService, list *ListService, deleter *DeleteService, rl *ratelimit.Limiter) *Controller {
-	return &Controller{upload: upload, list: list, deleter: deleter, rl: rl}
+func NewController(upload *UploadService, list *ListService, deleter *DeleteService, query *QueryService, rl *ratelimit.Limiter) *Controller {
+	return &Controller{upload: upload, list: list, deleter: deleter, query: query, rl: rl}
 }
 
 // RegisterRoutes 注册 /api/knowledgebase 路由（方法与路径对齐 Java 注解）。
@@ -44,6 +45,14 @@ func (ctl *Controller) RegisterRoutes(g *gin.RouterGroup) {
 	h.GET("/list", ctl.listKnowledgeBases)
 	h.GET("/search", ctl.search)
 	h.GET("/stats", ctl.stats)
+	h.POST("/query", ctl.rl.Middleware(
+		ratelimit.Global(10, time.Second),
+		ratelimit.PerIP(10, time.Second),
+	), ctl.queryKnowledgeBase)
+	h.POST("/query/stream", ctl.rl.Middleware(
+		ratelimit.Global(5, time.Second),
+		ratelimit.PerIP(5, time.Second),
+	), ctl.queryKnowledgeBaseStream)
 	h.GET("/categories", ctl.categories)
 	h.GET("/category/:category", ctl.listByCategory)
 	h.GET("/uncategorized", ctl.uncategorized)
@@ -226,6 +235,93 @@ func (ctl *Controller) stats(c *gin.Context) {
 		return
 	}
 	result.OK(c, dto)
+}
+
+// queryKnowledgeBase POST /api/knowledgebase/query（同步问答）。
+// 参数校验对齐 Java @Valid：违规消息按字段声明顺序以 ", " 连接（400）。
+func (ctl *Controller) queryKnowledgeBase(c *gin.Context) {
+	req, ok := bindQueryRequest(c)
+	if !ok {
+		return
+	}
+	resp, err := ctl.query.QueryKnowledgeBase(c.Request.Context(), req)
+	if err != nil {
+		result.FailErr(c, err)
+		return
+	}
+	result.OK(c, resp)
+}
+
+// queryKnowledgeBaseStream POST /api/knowledgebase/query/stream（流式 SSE，
+// data-only 事件，多行内容按 SSE 标准拆分为多个 data: 行）。
+func (ctl *Controller) queryKnowledgeBaseStream(c *gin.Context) {
+	req, ok := bindQueryRequest(c)
+	if !ok {
+		return
+	}
+	startSSE(c)
+	for chunk := range ctl.query.AnswerQuestionStream(c.Request.Context(), req.KnowledgeBaseIDs, req.Question, nil) {
+		if chunk.Err != nil || c.Request.Context().Err() != nil {
+			return
+		}
+		if !writeSSEData(c, chunk.Text, false) {
+			return
+		}
+	}
+}
+
+// bindQueryRequest 解析并校验查询请求体（Java QueryRequest @NotEmpty/@NotBlank）。
+func bindQueryRequest(c *gin.Context) (QueryRequest, bool) {
+	var req QueryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.Fail(c, 400, "请求体格式不正确")
+		return req, false
+	}
+	var violations []string
+	if len(req.KnowledgeBaseIDs) == 0 {
+		violations = append(violations, "至少选择一个知识库")
+	}
+	if strings.TrimSpace(req.Question) == "" {
+		violations = append(violations, "问题不能为空")
+	}
+	if len(violations) > 0 {
+		result.Fail(c, 400, strings.Join(violations, ", "))
+		return req, false
+	}
+	return req, true
+}
+
+// startSSE 设置流式响应头（Java produces = text/event-stream）。
+func startSSE(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+}
+
+// writeSSEData 写入一个 data-only 事件并刷新。
+// escapeNewlines=true（RAG 会话流）：换行转义为字面 \n、\r 转义为字面 \r，
+// 事件保持单 data 行（Java ServerSentEvent 包装语义）；
+// false（query 流）：按 SSE 标准把多行内容拆为多个 data: 行（WebFlux 对
+// Flux<String> 的编码语义），前端逐行解析。
+func writeSSEData(c *gin.Context, data string, escapeNewlines bool) bool {
+	payload := data
+	if escapeNewlines {
+		payload = strings.ReplaceAll(data, "\n", "\\n")
+		payload = strings.ReplaceAll(payload, "\r", "\\r")
+		if _, err := c.Writer.WriteString("data:" + payload + "\n\n"); err != nil {
+			return false
+		}
+	} else {
+		for _, line := range strings.Split(payload, "\n") {
+			if _, err := c.Writer.WriteString("data:" + line + "\n"); err != nil {
+				return false
+			}
+		}
+		if _, err := c.Writer.WriteString("\n"); err != nil {
+			return false
+		}
+	}
+	c.Writer.Flush()
+	return true
 }
 
 // javaURLEncode 复刻 java.net.URLEncoder.encode(s, UTF_8) + replace("+", "%20")：

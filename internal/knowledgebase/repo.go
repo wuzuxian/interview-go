@@ -47,6 +47,7 @@ type Store interface {
 
 	// ===== 管理接口（票 02，查询语义逐条对齐 Java KnowledgeBaseRepository 派生查询）=====
 
+	FindAllByIDs(ctx context.Context, ids []int64) ([]KnowledgeBaseEntity, error)
 	FindAllOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error)
 	FindByVectorStatusOrderByUploadedAtDesc(ctx context.Context, status VectorStatus) ([]KnowledgeBaseEntity, error)
 	FindAllCategories(ctx context.Context) ([]string, error)
@@ -67,6 +68,11 @@ type Store interface {
 	// DeleteVectorsByKBID 事务外删除正式向量（按 metadata kb_id，兼容 kb_id_long 旧键；
 	// Java VectorRepository.deleteByKnowledgeBaseId）。
 	DeleteVectorsByKBID(ctx context.Context, id int64) error
+
+	// ===== RAG 查询计数（票 03，Java KnowledgeBaseRepository.incrementQuestionCountBatch）=====
+
+	// IncrementQuestionCountBatch 提问计数单条 SQL 批量 +1。
+	IncrementQuestionCountBatch(ctx context.Context, ids []int64) error
 }
 
 // Repo GORM 实现。
@@ -306,6 +312,21 @@ func truncateError(msg string, max int) string {
 }
 
 // ===== 管理接口（票 02）=====
+
+// FindAllByIDs 按主键批量查询（Java findAllById）。
+func (r *Repo) FindAllByIDs(ctx context.Context, ids []int64) ([]KnowledgeBaseEntity, error) {
+	var list []KnowledgeBaseEntity
+	err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&list).Error
+	return list, err
+}
+
+// IncrementQuestionCountBatch 提问计数单条 SQL 批量 +1
+// （Java incrementQuestionCountBatch：UPDATE knowledge_bases SET question_count =
+// COALESCE(question_count,0)+1 WHERE id IN (:ids)）。
+func (r *Repo) IncrementQuestionCountBatch(ctx context.Context, ids []int64) error {
+	return r.db.WithContext(ctx).Model(&KnowledgeBaseEntity{}).Where("id IN ?", ids).
+		Update("question_count", gorm.Expr("COALESCE(question_count, 0) + 1")).Error
+}
 
 // FindAllOrderByUploadedAtDesc 全量列表（Java findAllByOrderByUploadedAtDesc）。
 func (r *Repo) FindAllOrderByUploadedAtDesc(ctx context.Context) ([]KnowledgeBaseEntity, error) {

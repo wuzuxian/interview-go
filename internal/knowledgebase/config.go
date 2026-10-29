@@ -23,6 +23,33 @@ type Config struct {
 	HeartbeatThrottle time.Duration `config:"heartbeat_throttle" default:"30s"`
 	// Vectorization 切分策略（Java app.ai.rag.vectorization.*）。
 	Vectorization VectorizationConfig `config:"vectorization"`
+	// Query RAG 查询管线参数（Java app.ai.rag.* 的 rewrite/search/history 段）。
+	Query RagQueryConfig `config:"query"`
+}
+
+// RagQueryConfig RAG 查询参数（Java KnowledgeBaseQueryProperties）。
+type RagQueryConfig struct {
+	// RewriteEnabled 问题改写开关（Java app.ai.rag.rewrite.enabled，默认开）。
+	RewriteEnabled bool `config:"rewrite_enabled" default:"true"`
+	// MergeOriginalQuery 双路召回融合开关（Java search.merge-original-query，默认关）。
+	MergeOriginalQuery bool `config:"merge_original_query" default:"false"`
+	// ShortQueryLength 短问题长度档（字符数，Java search.short-query-length=4）。
+	ShortQueryLength int `config:"short_query_length" default:"4"`
+	// TopkShort 短问题检索档 topK（Java search.topk-short=20）。
+	TopkShort int `config:"topk_short" default:"20"`
+	// TopkMedium 中等问题检索档 topK（Java search.topk-medium=12）。
+	TopkMedium int `config:"topk_medium" default:"12"`
+	// TopkLong 长问题检索档 topK（Java search.topk-long=8）。
+	TopkLong int `config:"topk_long" default:"8"`
+	// MinScoreShort 短问题相似度阈值。取 Java application.yml 运行值 0.18
+	// （Properties 代码默认 0.25 被 yml 覆盖，票面要求以 yml 核对为准）。
+	MinScoreShort float64 `config:"min_score_short" default:"0.18"`
+	// MinScoreDefault 中/长问题相似度阈值（Java search.min-score-default=0.28）。
+	MinScoreDefault float64 `config:"min_score_default" default:"0.28"`
+	// HistoryEnabled 多轮历史开关（Java app.ai.rag.history.enabled，默认开）。
+	HistoryEnabled bool `config:"history_enabled" default:"true"`
+	// HistoryMaxMessages 历史消息条数上限（Java history.max-messages=10）。
+	HistoryMaxMessages int `config:"history_max_messages" default:"10"`
 }
 
 // VectorizationConfig TokenTextSplitter 策略参数（Java KnowledgeBaseVectorProperties）。

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/pgvector/pgvector-go"
@@ -14,6 +16,7 @@ import (
 
 	einoembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
 
+	"github.com/wuzuxian/interview/internal/apperr"
 	"github.com/wuzuxian/interview/internal/strutil"
 )
 
@@ -207,6 +210,174 @@ type SearchHit struct {
 	ID       uuid.UUID
 	Content  string
 	Distance float64
+}
+
+// KBDoc 知识库相似度检索结果（Java Spring AI Document 视图：id/content/metadata/score）。
+type KBDoc struct {
+	ID       string
+	Content  string
+	Metadata map[string]any
+	Score    *float64
+}
+
+// SimilaritySearch 知识库向量检索（Java KnowledgeBaseVectorService.similaritySearch）：
+// 查询文本向量化后按 metadata kb_id IN 过滤优先下推 SQL（minScore>0 时附加相似度
+// 阈值，score = 1 - cosine distance）；前置过滤失败回退本地过滤（topK×3 放大内存
+// 过滤，阈值保留），回退再失败按 Java 语义抛 6004「向量搜索失败」。
+func (s *Store) SimilaritySearch(ctx context.Context, query string, kbIDs []int64, topK int, minScore float64) ([]KBDoc, error) {
+	if topK < 1 {
+		topK = 1
+	}
+	docs, err := s.searchKBWithFilter(ctx, query, kbIDs, topK, minScore)
+	if err != nil {
+		s.logger.Warn("向量搜索前置过滤失败，回退到本地过滤", slog.String("error", err.Error()))
+		return s.searchKBFallback(ctx, query, kbIDs, topK, minScore)
+	}
+	return docs, nil
+}
+
+// searchKBWithFilter 前置过滤路径：kb_id IN 下推 SQL（kb_id metadata 为字符串键，
+// 与 Java Filter "kb_id in ['1', '2']" 语义一致）。
+func (s *Store) searchKBWithFilter(ctx context.Context, query string, kbIDs []int64, topK int, minScore float64) ([]KBDoc, error) {
+	vectors, err := s.embedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	sql, args := kbSearchSQL(kbIDs, topK, minScore)
+	return s.scanKBDocs(ctx, sql, append([]any{vectors, vectors, vectors}, args...)...)
+}
+
+// searchKBFallback 回退路径：放大 3 倍 topK 不带 kb 过滤检索，再按 metadata
+// kb_id 内存过滤、截断 topK（Java similaritySearchFallback；失败抛 6004）。
+func (s *Store) searchKBFallback(ctx context.Context, query string, kbIDs []int64, topK int, minScore float64) ([]KBDoc, error) {
+	amplified := topK * 3
+	if amplified < topK {
+		amplified = topK
+	}
+	vectors, err := s.embedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	sql, args := kbSearchSQL(nil, amplified, minScore)
+	docs, err := s.scanKBDocs(ctx, sql, append([]any{vectors, vectors, vectors}, args...)...)
+	if err != nil {
+		return nil, apperr.New(apperr.CodeKnowledgeBaseQueryFailed, "向量搜索失败")
+	}
+	docs = filterKBDocsLocal(docs, kbIDs, topK)
+	return docs, nil
+}
+
+// filterKBDocsLocal 回退路径的内存 kb 过滤 + topK 截断
+// （Java similaritySearchFallback 的 stream filter + limit）。
+func filterKBDocsLocal(docs []KBDoc, kbIDs []int64, topK int) []KBDoc {
+	if len(kbIDs) > 0 {
+		allowed := make(map[int64]bool, len(kbIDs))
+		for _, id := range kbIDs {
+			allowed[id] = true
+		}
+		filtered := docs[:0]
+		for _, doc := range docs {
+			if kbIDInMetadata(doc.Metadata["kb_id"], allowed) {
+				filtered = append(filtered, doc)
+			}
+		}
+		docs = filtered
+	}
+	if len(docs) > topK {
+		docs = docs[:topK]
+	}
+	return docs
+}
+
+// kbSearchSQL 组装向量检索 SQL（minScore>0 时附加阈值条件，Java 仅在 minScore>0
+// 时设置 similarityThreshold；kbIDs 为空不加 kb 过滤）。
+func kbSearchSQL(kbIDs []int64, topK int, minScore float64) (string, []any) {
+	if topK < 1 {
+		topK = 1
+	}
+	var b strings.Builder
+	b.WriteString("SELECT id, content, metadata, 1 - (embedding <=> ?) AS score ")
+	b.WriteString("FROM vector_store WHERE 1=1")
+	var args []any
+	if len(kbIDs) > 0 {
+		quoted := make([]string, 0, len(kbIDs))
+		for _, id := range kbIDs {
+			quoted = append(quoted, "'"+strconv.FormatInt(id, 10)+"'")
+		}
+		b.WriteString(" AND metadata->>'kb_id' IN (" + strings.Join(quoted, ", ") + ")")
+	}
+	if minScore > 0 {
+		b.WriteString(" AND 1 - (embedding <=> ?) >= ?")
+		args = append(args, minScore)
+	}
+	b.WriteString(" ORDER BY embedding <=> ? LIMIT ?")
+	args = append(args, topK)
+	return b.String(), args
+}
+
+// embedQuery 查询文本向量化（每次检索独立 embed，回退路径重embed 与 Java
+// 二次调用 vectorStore.similaritySearch 一致）。
+func (s *Store) embedQuery(ctx context.Context, query string) (pgvector.Vector, error) {
+	emb, err := s.embedder(ctx)
+	if err != nil {
+		return pgvector.Vector{}, err
+	}
+	vectors, err := emb.EmbedStrings(ctx, []string{query})
+	if err != nil {
+		return pgvector.Vector{}, fmt.Errorf("vector: 查询向量化失败: %w", err)
+	}
+	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		return pgvector.Vector{}, fmt.Errorf("vector: 查询向量化返回空结果")
+	}
+	f32 := make([]float32, len(vectors[0]))
+	for i, v := range vectors[0] {
+		f32[i] = float32(v)
+	}
+	return pgvector.NewVector(f32), nil
+}
+
+// scanKBDocs 执行检索 SQL 并映射结果。
+func (s *Store) scanKBDocs(ctx context.Context, sql string, args ...any) ([]KBDoc, error) {
+	var rows []struct {
+		ID       uuid.UUID       `gorm:"column:id"`
+		Content  *string         `gorm:"column:content"`
+		Metadata json.RawMessage `gorm:"column:metadata"`
+		Score    *float64        `gorm:"column:score"`
+	}
+	if err := s.db.WithContext(ctx).Raw(sql, args...).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	docs := make([]KBDoc, 0, len(rows))
+	for _, r := range rows {
+		meta := map[string]any{}
+		if len(r.Metadata) > 0 {
+			if err := json.Unmarshal(r.Metadata, &meta); err != nil {
+				return nil, fmt.Errorf("vector: metadata 解析失败: %w", err)
+			}
+		}
+		docs = append(docs, KBDoc{ID: r.ID.String(), Content: derefStr(r.Content), Metadata: meta, Score: r.Score})
+	}
+	return docs, nil
+}
+
+// kbIDInMetadata metadata kb_id 归一为 int64 后判断（Java isDocInKnowledgeBases：
+// Long 或可解析字符串，解析失败视为不在集合内）。
+func kbIDInMetadata(value any, allowed map[int64]bool) bool {
+	switch v := value.(type) {
+	case string:
+		id, err := strconv.ParseInt(v, 10, 64)
+		return err == nil && allowed[id]
+	case float64:
+		return allowed[int64(v)]
+	case int:
+		return allowed[int64(v)]
+	case int32:
+		return allowed[int64(v)]
+	case int64:
+		return allowed[v]
+	default:
+		return false
+	}
 }
 
 func derefStr(p *string) string {

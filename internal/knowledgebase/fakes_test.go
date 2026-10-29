@@ -426,6 +426,38 @@ func (s *fakeStore) vectorRows() []vectorRow {
 
 // ===== fakeStore 管理查询/删除（票 02，内存镜像 Java 派生查询语义）=====
 
+// FindAllByIDs 按主键集合返回（内存镜像 Java findAllById，去重输出）。
+func (s *fakeStore) FindAllByIDs(ctx context.Context, ids []int64) ([]KnowledgeBaseEntity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []KnowledgeBaseEntity
+	for _, id := range ids {
+		if kb, ok := s.kbs[id]; ok {
+			out = append(out, *kb)
+		}
+	}
+	return out, nil
+}
+
+// IncrementQuestionCountBatch 提问计数批量 +1（内存镜像单条 SQL 批量更新）。
+func (s *fakeStore) IncrementQuestionCountBatch(ctx context.Context, ids []int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		kb, ok := s.kbs[id]
+		if !ok {
+			continue
+		}
+		n := 0
+		if kb.QuestionCount != nil {
+			n = *kb.QuestionCount
+		}
+		n++
+		kb.QuestionCount = &n
+	}
+	return nil
+}
+
 // listByUploadedAtDesc 全部实体按 uploadedAt 倒序快照。
 func (s *fakeStore) listByUploadedAtDesc() []KnowledgeBaseEntity {
 	out := make([]KnowledgeBaseEntity, 0, len(s.kbs))

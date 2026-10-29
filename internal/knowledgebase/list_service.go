@@ -227,6 +227,21 @@ func (s *ListService) Download(ctx context.Context, id int64) (*DownloadResult, 
 	}, nil
 }
 
+// GetKnowledgeBaseNames 按 ID 列表取知识库名称（Java getKnowledgeBaseNames：
+// 逐个 findById，缺失位置补「未知知识库」，顺序与入参一致）。
+func (s *ListService) GetKnowledgeBaseNames(ctx context.Context, ids []int64) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		kb, err := s.store.FindByID(ctx, id)
+		if err != nil || kb == nil {
+			out = append(out, "未知知识库")
+			continue
+		}
+		out = append(out, kb.Name)
+	}
+	return out
+}
+
 // toListItemDTO 实体 → 列表 DTO（Java MapStruct 同名映射；
 // questionGenStatus 实体初始化为 NONE，列值为空时同样输出 NONE）。
 func toListItemDTO(e *KnowledgeBaseEntity) KnowledgeBaseListItemDTO {

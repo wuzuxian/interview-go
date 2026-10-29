@@ -356,7 +356,16 @@ func main() {
 	// 管理接口（票 02）：列表/详情/删除/分类/搜索/统计/下载。
 	kbList := knowledgebase.NewListService(kbRepo, storeSvc, slogger)
 	kbDelete := knowledgebase.NewDeleteService(kbRepo, storeSvc, slogger)
-	kbCtl := knowledgebase.NewController(kbUpload, kbList, kbDelete, rl)
+	// RAG 查询 + RAG 会话（票 03）：问题改写 → 动态分档检索 → [S#] 引用 prompt →
+	// 拒答探测 → footer → SSE。检索经 vector.Store 的 kb_id IN 下推（回退本地过滤），
+	// 对话模型走默认 Provider 的普通 ChatModel（Java getPlainChatClient()）。
+	kbQuery := knowledgebase.NewQueryService(
+		func(ctx context.Context) (knowledgebase.ChatModel, error) { return bridge.RagChatModelFor(ctx) },
+		vecStore, kbRepo, kbList, appCfg.KnowledgeBase.Query, slogger)
+	kbChatRepo := knowledgebase.NewChatRepo(db.DB, slogger)
+	kbChat := knowledgebase.NewRagChatService(kbRepo, kbChatRepo, kbQuery, appCfg.KnowledgeBase.Query, slogger)
+	kbCtl := knowledgebase.NewController(kbUpload, kbList, kbDelete, kbQuery, rl)
+	kbChatCtl := knowledgebase.NewRagChatController(kbChat, slogger)
 
 	// 5. HTTP 服务器与路由（与 Java 版全局行为对齐）。
 	srv := ginserver.New(
@@ -379,6 +388,7 @@ func main() {
 	interviewCtl.RegisterRoutes(api)
 	voiceCtl.RegisterRoutes(api)
 	kbCtl.RegisterRoutes(api)
+	kbChatCtl.RegisterRoutes(api)
 	voiceGateway.RegisterRoutes(srv.Group("/ws"))
 	srv.GET("/ping", func(c *gin.Context) {
 		result.OK(c, gin.H{"message": "pong"})

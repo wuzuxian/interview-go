@@ -75,6 +75,7 @@ func newContractFixture(t *testing.T) *contractFixture {
 	ctl := NewController(f.f.svc,
 		NewListService(f.f.store, f.f.storage, discardLogger()),
 		NewDeleteService(f.f.store, f.f.storage, discardLogger()),
+		nil,
 		ratelimit.New(errScripter{}, discardLogger()))
 	ctl.RegisterRoutes(api)
 	return f
