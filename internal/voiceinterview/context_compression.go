@@ -160,7 +160,7 @@ func (c *Compressor) Compress(ctx context.Context, turns []MessageEntity, cached
 }
 
 // truncateSummaryText 摘要超过 maxSummaryChars 时从尾部截断并附加标记
-//（Java truncateSummary L130-141 逐字）。
+// （Java truncateSummary L130-141 逐字）。
 func truncateSummaryText(summary *string, maxChars int) *string {
 	if summary == nil {
 		return nil
@@ -354,7 +354,7 @@ func NewHistoryLoader(store CompressionStore, compressor *Compressor, cfg Contex
 
 // LoadHistory 加载并压缩会话历史，返回格式化后的文本行（含可选的摘要行）。
 // 与压缩器的契约：传入的 turns 是「待摘要批 + 最近窗口」，coveredTurns 恒为 0
-//（待摘要批已在覆盖边界之后）；压缩成功后的新覆盖边界 =
+// （待摘要批已在覆盖边界之后）；压缩成功后的新覆盖边界 =
 // turns[coveredTurns-1].sequenceNum，锁内校验不回退。
 func (l *HistoryLoader) LoadHistory(ctx context.Context, sessionID int64, llmProvider string) []string {
 	if !l.cfg.Enabled {
@@ -452,7 +452,7 @@ func (l *HistoryLoader) loadBounded(ctx context.Context, sessionID int64, llmPro
 
 // migrateLegacyBoundary 旧 SUMMARY 行迁移：coveredTurns = -旧sequenceNum - 1，
 // 用 OFFSET/LIMIT 1 定位第 N 条原始消息的 sequenceNum 作为边界并写回
-//（Java migrateLegacyBoundary L133-151 逐字）。
+// （Java migrateLegacyBoundary L133-151 逐字）。
 func (l *HistoryLoader) migrateLegacyBoundary(ctx context.Context, sessionID int64, legacySequenceNum *int) (int, error) {
 	coveredTurns := 0
 	if legacySequenceNum != nil {
@@ -473,7 +473,7 @@ func (l *HistoryLoader) migrateLegacyBoundary(ctx context.Context, sessionID int
 }
 
 // loadWindowOnly 摘要失败/加载异常时的降级：只取最近窗口（查询量仍有界），不恢复全量
-//（Java loadWindowOnly L156-166）。
+// （Java loadWindowOnly L156-166）。
 func (l *HistoryLoader) loadWindowOnly(ctx context.Context, sessionID int64) []string {
 	recent, err := l.store.FindRecentDialogueMessages(ctx, sessionID, l.cfg.WindowSize)
 	if err != nil {
